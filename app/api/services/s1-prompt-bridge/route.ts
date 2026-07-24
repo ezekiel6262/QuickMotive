@@ -53,8 +53,8 @@ export async function POST(req: Request) {
 
         const result =
           body.output_type === "video"
-            ? await higgsfield.generateVideo({ model: "kling3_0_turbo", prompt: finalPrompt })
-            : await higgsfield.generateImage({ model: "nano_banana_pro", prompt: finalPrompt });
+            ? await higgsfield.generateVideo({ prompt: finalPrompt })
+            : await higgsfield.generateImage({ prompt: finalPrompt });
 
         const assetUrl = result.assets[0]?.url ?? null;
         await supabase.from("media_assets").insert({

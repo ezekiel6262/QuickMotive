@@ -127,12 +127,23 @@ These are places where the build brief assumed an interactive-agent MCP
 tool shape that doesn't match what a headless backend can call, or where a
 public API contract needs confirming before go-live:
 
-- **Higgsfield**: the MCP tools available to a chat agent
-  (`media_upload_widget`, confirmed `media_id`/`job_id` chaining, presets)
-  are designed for a human-in-the-loop session. `lib/clients/higgsfield.ts`
-  instead targets a server-to-server API surface using the same operation
-  names and param shapes as the MCP schemas. Confirm exact endpoint paths
-  and auth against Higgsfield's developer docs before go-live.
+- **Higgsfield**: `lib/clients/higgsfield.ts` was originally guessed
+  (Bearer auth, `POST /v1/generate_image`, synchronous response) and
+  confirmed wrong against a live deployment (404, since the configured URL
+  was actually Higgsfield's separate MCP endpoint). Rewritten against the
+  official JS SDK source (github.com/higgsfield-ai/higgsfield-js): base URL
+  `https://platform.higgsfield.ai`, auth header `Authorization: Key
+  KEY_ID:KEY_SECRET` (not Bearer), model-slug-based endpoints
+  (`POST /v1/{modelSlug}`), async submit-then-poll
+  (`GET /requests/{id}/status`). Only the text-to-image slug
+  (`flux-pro/kontext/max/text-to-image`) is confirmed -- every other
+  operation (video, motion control, outpaint, background removal, upscale,
+  reframe, game creation) still uses placeholder model slugs marked
+  `UNVERIFIED` in the client and will very likely 404 the same way until
+  confirmed against Higgsfield's model catalog. Also unconfirmed: whether
+  polling completes within a single Vercel function's timeout for slower
+  jobs (video especially) -- the SDK's `hf_webhook` callback is the
+  probable fix once basic image generation is confirmed working.
 - **Canva**: the brief assumed a
   `start-editing-transaction -> perform-editing-operations -> commit-editing-transaction`
   flow. Canva's actual tool is a single `edit-design` call keyed by a

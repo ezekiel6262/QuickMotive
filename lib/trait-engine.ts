@@ -28,7 +28,6 @@ export async function buildTraitLibrary(params: {
   for (const category of params.categories) {
     for (const option of category.options) {
       const generated = await higgsfield.generateImage({
-        model: "nano_banana_pro",
         prompt: `${option} ${category.category}, isolated on plain background, for a layered NFT trait asset. Style: ${params.stylePrompt}`,
         aspectRatio: "1:1",
         count: 1
@@ -36,7 +35,7 @@ export async function buildTraitLibrary(params: {
       const firstAsset = generated.assets[0];
       if (!firstAsset) throw new Error(`No asset returned for trait ${category.category}:${option}`);
 
-      const cutout = await higgsfield.removeBackground({ mediaId: generated.job_id, mediaType: "image" });
+      const cutout = await higgsfield.removeBackground({ mediaId: firstAsset.url, mediaType: "image" });
       const assetUrl = cutout.assets[0]?.url ?? firstAsset.url;
 
       const { data, error } = await supabase
