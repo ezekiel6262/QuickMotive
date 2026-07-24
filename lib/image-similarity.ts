@@ -3,7 +3,10 @@ import sharp from "sharp";
 /** 8x8 grayscale average hash -> 64-bit similarity fingerprint. */
 async function averageHash(url: string): Promise<bigint> {
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to fetch image for hashing: ${url}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Failed to fetch image for hashing: ${url} (${res.status}) ${body}`);
+  }
   const buffer = Buffer.from(await res.arrayBuffer());
 
   const { data } = await sharp(buffer)
