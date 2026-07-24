@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { parseBody, requireBuyerWallet, handleRouteError } from "@/lib/api-helpers";
 import { withJob } from "@/lib/jobs";
-import * as gemini from "@/lib/clients/gemini";
+import * as stability from "@/lib/clients/stability";
 import { similarityScore } from "@/lib/image-similarity";
 import { getSupabaseAdmin } from "@/lib/supabase/client";
 import { getToolDefinition } from "@/lib/a2mcp/registry";
@@ -30,27 +30,27 @@ export async function POST(req: Request) {
       async (jobId) => {
         const supabase = getSupabaseAdmin();
 
-        // Gemini has no numeric "strength" knob like the old Higgsfield
-        // img2img call assumed -- body.strength is accepted for API
-        // compatibility but currently unused. Steer variation via prompt
-        // instead.
+        // Real img2img with a strength dial, via Stability AI (sd3.5-medium)
+        // -- Gemini (used elsewhere in this suite) has no equivalent
+        // mechanism. body.strength maps directly to the model's denoising
+        // strength (0 = preserve original, 1 = fully remake).
         const variationPrompt =
-          "Create a stylistic variation of this image: keep the overall subject and composition recognizable, but vary details such as color, pose, or background.";
+          "Create a variation of this image: keep the overall subject and composition recognizable, but vary details such as color, pose, or background.";
 
         const generations = await Promise.all(
           Array.from({ length: body.variation_count }, () =>
-            gemini.generateImage({
+            stability.imageToImage({
+              imageUrl: body.source_image_url,
               prompt: variationPrompt,
-              medias: [{ value: body.source_image_url, role: "image_reference" }]
+              strength: body.strength
             })
           )
         );
 
         const variations = await Promise.all(
           generations.map(async (g) => {
-            const url = g.assets[0]?.url ?? null;
-            const score = url ? await similarityScore(body.source_image_url, url) : null;
-            return { url, similarity_score: score, generation_job_id: g.job_id };
+            const score = await similarityScore(body.source_image_url, g.url);
+            return { url: g.url, similarity_score: score };
           })
         );
 
@@ -60,7 +60,7 @@ export async function POST(req: Request) {
             type: "image" as const,
             url: v.url,
             source_prompt: variationPrompt,
-            metadata: { source_image_url: body.source_image_url, similarity_score: v.similarity_score, generation_job_id: v.generation_job_id },
+            metadata: { source_image_url: body.source_image_url, similarity_score: v.similarity_score, strength: body.strength },
             qc_status: "pending" as const
           }))
         );
