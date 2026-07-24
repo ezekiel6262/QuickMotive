@@ -22,9 +22,9 @@ visual-analysis gap.
    -------------------------------------------------------------------
    |                |                  |                  |          |
 Media gen      Design edit      On-chain scan       Generative-art  Report
-(Higgsfield    (Canva Connect   (Moralis/Covalent)   engine (trait  gen (PDF)
-API)           API)                                  taxonomy +
-                                                       hash dedup)
+(Gemini image, (Canva Connect   (Moralis/Covalent)   engine (trait  gen (PDF)
+Higgsfield     API)                                  taxonomy +
+video/motion)                                        hash dedup)
         |
    Brand-lock store (palette/type/logo/style refs) -- every generation
    call above can optionally pull constraints from here
@@ -63,6 +63,10 @@ S11.
 ## Tech stack
 
 - Next.js 14 (App Router) + TypeScript
+- Google Gemini API (`gemini-2.5-flash-image` / "Nano Banana") for all image
+  generation -- direct integration, not through Higgsfield, on cost grounds
+- Higgsfield REST API for video/motion/outpaint/background-removal/upscale/
+  reframe/game creation (image generation moved off it, see above)
 - Anthropic SDK (`@anthropic-ai/sdk`) for prompt extraction (S1), edit
   planning (S3), and the orchestrator's tool-use loop
 - `sharp` for server-side image compositing (S10), export resizing (S9),
@@ -135,15 +139,27 @@ public API contract needs confirming before go-live:
   `https://platform.higgsfield.ai`, auth header `Authorization: Key
   KEY_ID:KEY_SECRET` (not Bearer), model-slug-based endpoints
   (`POST /v1/{modelSlug}`), async submit-then-poll
-  (`GET /requests/{id}/status`). Only the text-to-image slug
-  (`flux-pro/kontext/max/text-to-image`) is confirmed -- every other
-  operation (video, motion control, outpaint, background removal, upscale,
-  reframe, game creation) still uses placeholder model slugs marked
-  `UNVERIFIED` in the client and will very likely 404 the same way until
-  confirmed against Higgsfield's model catalog. Also unconfirmed: whether
-  polling completes within a single Vercel function's timeout for slower
-  jobs (video especially) -- the SDK's `hf_webhook` callback is the
-  probable fix once basic image generation is confirmed working.
+  (`GET /requests/{id}/status`). All image generation has since moved off
+  Higgsfield onto Gemini (see below) on cost grounds -- Higgsfield remains
+  wired only for video/motion/outpaint/background-removal/upscale/
+  reframe/game creation, all still using placeholder model slugs marked
+  `UNVERIFIED` in the client and likely to 404 the same way the image
+  endpoint did until confirmed against Higgsfield's model catalog. Also
+  unconfirmed: whether polling completes within a single Vercel function's
+  timeout for slower jobs (video especially) -- the SDK's `hf_webhook`
+  callback is the probable fix.
+- **Gemini** (`lib/clients/gemini.ts`, `gemini-2.5-flash-image` / "Nano
+  Banana"): handles all image generation (S1 text-to-image, S6, S7, S8, and
+  S10's trait library) as a direct, cheaper replacement for Higgsfield.
+  Confirmed against Google's docs/cookbook before wiring (unlike the first
+  Higgsfield pass), but still untested live end-to-end as of this writing
+  -- confirm a real `GEMINI_API_KEY` call succeeds before relying on it.
+  Known gaps: no numeric img2img "strength" equivalent (S7 steers variation
+  via prompt wording instead, a materially different mechanism from the
+  original strength-based approach); free-tier rate limits aren't accounted
+  for in the parallel `Promise.all` fan-outs in S6/S8/S10 (a burst of
+  concurrent calls could 429); no handling yet for `promptFeedback` safety
+  blocks beyond surfacing the error.
 - **Canva**: the brief assumed a
   `start-editing-transaction -> perform-editing-operations -> commit-editing-transaction`
   flow. Canva's actual tool is a single `edit-design` call keyed by a

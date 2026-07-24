@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { getSupabaseAdmin } from "@/lib/supabase/client";
 import * as higgsfield from "@/lib/clients/higgsfield";
+import * as gemini from "@/lib/clients/gemini";
 import type { TraitLibraryRow } from "@/lib/supabase/types";
 
 const STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET ?? "quickmotive-assets";
@@ -12,8 +13,9 @@ export interface TraitCategoryDefinition {
 }
 
 /**
- * Step 2: generate a layered, transparent-background asset per trait option
- * via Higgsfield generate_image + remove_background, and persist it to
+ * Step 2: generate a layered, transparent-background asset per trait
+ * option via Gemini (image gen) + Higgsfield (background removal --
+ * unverified model slug, see lib/clients/higgsfield.ts), and persist it to
  * trait_library. Idempotent per (collection, category, option) -- re-running
  * with the same taxonomy does not duplicate rows (unique constraint).
  */
@@ -27,10 +29,9 @@ export async function buildTraitLibrary(params: {
 
   for (const category of params.categories) {
     for (const option of category.options) {
-      const generated = await higgsfield.generateImage({
+      const generated = await gemini.generateImage({
         prompt: `${option} ${category.category}, isolated on plain background, for a layered NFT trait asset. Style: ${params.stylePrompt}`,
-        aspectRatio: "1:1",
-        count: 1
+        aspectRatio: "1:1"
       });
       const firstAsset = generated.assets[0];
       if (!firstAsset) throw new Error(`No asset returned for trait ${category.category}:${option}`);

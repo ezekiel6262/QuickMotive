@@ -4,6 +4,7 @@ import { parseBody, requireBuyerWallet, handleRouteError } from "@/lib/api-helpe
 import { withJob } from "@/lib/jobs";
 import { extractStructuredPrompt } from "@/lib/clients/anthropic";
 import * as higgsfield from "@/lib/clients/higgsfield";
+import * as gemini from "@/lib/clients/gemini";
 import { getBrandKit, applyBrandConstraintsToPrompt } from "@/lib/brand-kit";
 import { getSupabaseAdmin } from "@/lib/supabase/client";
 import { getToolDefinition } from "@/lib/a2mcp/registry";
@@ -21,7 +22,9 @@ const bodySchema = z
 /**
  * S1: Image/Video <-> Text Prompting.
  * media in -> structured, reusable prompt (via Claude vision).
- * text in  -> generated image/video (via Higgsfield).
+ * text in, image out -> Gemini (gemini-2.5-flash-image / "Nano Banana").
+ * text in, video out -> Higgsfield (unverified model slug, see
+ * lib/clients/higgsfield.ts).
  */
 export async function POST(req: Request) {
   try {
@@ -54,7 +57,7 @@ export async function POST(req: Request) {
         const result =
           body.output_type === "video"
             ? await higgsfield.generateVideo({ prompt: finalPrompt })
-            : await higgsfield.generateImage({ prompt: finalPrompt });
+            : await gemini.generateImage({ prompt: finalPrompt });
 
         const assetUrl = result.assets[0]?.url ?? null;
         await supabase.from("media_assets").insert({
@@ -62,7 +65,7 @@ export async function POST(req: Request) {
           type: body.output_type,
           url: assetUrl,
           source_prompt: finalPrompt,
-          metadata: { higgsfield_job_id: result.job_id },
+          metadata: { generation_job_id: result.job_id },
           brand_kit_id: body.brand_kit_id ?? null,
           qc_status: "pending"
         });

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { parseBody, requireBuyerWallet, handleRouteError } from "@/lib/api-helpers";
 import { withJob } from "@/lib/jobs";
-import * as higgsfield from "@/lib/clients/higgsfield";
+import * as gemini from "@/lib/clients/gemini";
 import { getBrandKit, applyBrandConstraintsToPrompt } from "@/lib/brand-kit";
 import { getSupabaseAdmin } from "@/lib/supabase/client";
 import { getToolDefinition } from "@/lib/a2mcp/registry";
@@ -41,7 +41,7 @@ export async function POST(req: Request) {
 
         const generations = await Promise.all(
           Array.from({ length: body.count }, () =>
-            higgsfield.generateImage({
+            gemini.generateImage({
               prompt: finalPrompt,
               medias: body.style_reference_url
                 ? [{ value: body.style_reference_url, role: "style_reference" }]
@@ -50,7 +50,7 @@ export async function POST(req: Request) {
           )
         );
 
-        const assets = generations.map((g) => ({ url: g.assets[0]?.url ?? null, higgsfield_job_id: g.job_id }));
+        const assets = generations.map((g) => ({ url: g.assets[0]?.url ?? null, generation_job_id: g.job_id }));
 
         await supabase.from("media_assets").insert(
           assets.map((asset) => ({
@@ -58,7 +58,7 @@ export async function POST(req: Request) {
             type: "image" as const,
             url: asset.url,
             source_prompt: finalPrompt,
-            metadata: { higgsfield_job_id: asset.higgsfield_job_id },
+            metadata: { generation_job_id: asset.generation_job_id },
             brand_kit_id: body.brand_kit_id ?? null,
             qc_status: "pending" as const
           }))
