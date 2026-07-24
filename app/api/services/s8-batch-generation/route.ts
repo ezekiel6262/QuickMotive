@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { parseBody, requireBuyerWallet, handleRouteError } from "@/lib/api-helpers";
 import { withJob } from "@/lib/jobs";
-import * as higgsfield from "@/lib/clients/higgsfield";
+import * as gemini from "@/lib/clients/gemini";
 import { getBrandKit, applyBrandConstraintsToPrompt } from "@/lib/brand-kit";
 import { runQcCheck } from "@/lib/qc";
 import { getSupabaseAdmin } from "@/lib/supabase/client";
@@ -19,14 +19,14 @@ const bodySchema = z.object({
 
 interface GeneratedItem {
   url: string;
-  higgsfieldJobId: string;
+  generationJobId: string;
 }
 
 async function generateOne(prompt: string, aspectRatio: string): Promise<GeneratedItem> {
-  const result = await higgsfield.generateImage({ prompt, aspectRatio });
+  const result = await gemini.generateImage({ prompt, aspectRatio });
   const url = result.assets[0]?.url;
   if (!url) throw new Error("Generation returned no asset");
-  return { url, higgsfieldJobId: result.job_id };
+  return { url, generationJobId: result.job_id };
 }
 
 /**
@@ -87,7 +87,7 @@ export async function POST(req: Request) {
             type: "image" as const,
             url: p.url,
             source_prompt: prompt,
-            metadata: { higgsfield_job_id: p.higgsfieldJobId },
+            metadata: { generation_job_id: p.generationJobId },
             brand_kit_id: body.brand_kit_id ?? null,
             qc_status: "pass" as const
           })),
