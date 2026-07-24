@@ -1,0 +1,164 @@
+# QuickMotive -- OKX.ai Creative & NFT Agent Suite
+
+An Agent Service Provider (ASP) exposing a portfolio of narrow, individually
+callable creative and NFT-analysis skills via A2MCP (pay-per-call), so each
+service earns independently instead of shipping as one monolithic agent.
+
+Positioning: the creative + NFT-intelligence desk on OKX.ai -- complements
+pure trading/data agents (CoinAnk, CertiK, etc.) by covering the media and
+visual-analysis gap.
+
+## Architecture
+
+```
+                         OKX.ai (Agent Marketplace)
+                                   |
+                    Agentic Wallet (onchain identity, USDT/USDG)
+                                   |
+                A2MCP endpoints (one per service, priced individually)
+                                   |
+                Orchestrator (Claude API, tool use) -- optional
+                                   |
+   -------------------------------------------------------------------
+   |                |                  |                  |          |
+Media gen      Design edit      On-chain scan       Generative-art  Report
+(Higgsfield    (Canva Connect   (Moralis/Covalent)   engine (trait  gen (PDF)
+API)           API)                                  taxonomy +
+                                                       hash dedup)
+        |
+   Brand-lock store (palette/type/logo/style refs) -- every generation
+   call above can optionally pull constraints from here
+```
+
+Every service is its own Next.js route handler under
+`app/api/services/<service>/route.ts`, backed by shared libs in `lib/`. None
+of them depend on the orchestrator to function -- `app/api/orchestrator`
+exists only as a "describe a goal, let Claude chain the right tools"
+convenience entry point, itself billed as the `orchestrator` service_type.
+
+## Services (S1-S11)
+
+The full catalog, with JSON Schema input/output and pricing, is defined in
+`lib/a2mcp/registry.ts` and served live at `GET /api/a2mcp/tools`. Summary:
+
+| ID  | Service | Route |
+|-----|---------|-------|
+| S1  | Image/video <-> text prompting | `/api/services/s1-prompt-bridge` |
+| S2  | Video motion from a single image | `/api/services/s2-image-to-motion` |
+| S3  | Graphic design smart edit | `/api/services/s3-design-tweak` |
+| S4  | On-chain NFT scanner + PDF report | `/api/services/s4-nft-scanner-report` |
+| S5  | Brand-lock kit definition | `/api/services/s5-brand-kit` |
+| S6  | NFT image generation from description | `/api/services/s6-nft-image-gen` |
+| S7  | NFT variation from a source image | `/api/services/s7-nft-variation` |
+| S8  | Batch generation with QC gating | `/api/services/s8-batch-generation` |
+| S9  | NFT-ready multi-format export | `/api/services/s9-export-bundle` |
+| S10 | Trait-based generative art engine | `/api/services/s10-trait-engine` |
+| S11 | Templated game from a character | `/api/services/s11-game-template` |
+
+Build sequence followed section 8 of the original brief: S4/S1 first
+(reuse-heavy, validates payment flow), then S5 (brand-lock, so S6/S7/S8
+don't need reworking later), then S2/S3/S6/S7, then S9, then S8/S10, then
+S11.
+
+## Tech stack
+
+- Next.js 14 (App Router) + TypeScript
+- Anthropic SDK (`@anthropic-ai/sdk`) for prompt extraction (S1), edit
+  planning (S3), and the orchestrator's tool-use loop
+- `sharp` for server-side image compositing (S10), export resizing (S9),
+  and QC checks (S8)
+- `pdf-lib` for the shared cover+grid PDF renderer (S4, S10)
+- Supabase (Postgres + Storage) for job/metadata records and generated
+  assets, matching the Merqt/Qwibi pattern
+- OKX Agentic Wallet + OnchainOS A2MCP for identity/settlement
+
+## Data model
+
+See `supabase/migrations/0001_init.sql`. Every A2MCP call creates one row in
+`jobs` (the audit/settlement anchor) via `lib/jobs.ts`'s `withJob` helper,
+regardless of which service handled it.
+
+## Setup
+
+```bash
+npm install
+cp .env.example .env.local   # fill in real credentials
+npm run typecheck
+npm run dev
+```
+
+Apply the migration to a Supabase project (`supabase db push` or paste
+`supabase/migrations/0001_init.sql` into the SQL editor) before exercising
+any route that touches the database.
+
+## OKX.ai integration checklist
+
+- [ ] Set up OKX Agentic Wallet for the ASP identity (email required)
+- [ ] Register as Agent Service Provider via OnchainOS
+- [ ] Register each A2MCP tool schema from `GET /api/a2mcp/tools` (one per
+      service, priced individually per `lib/a2mcp/registry.ts`)
+- [ ] Set spending limits/allowlists as required by the platform
+- [ ] Confirm settlement currency (USDT or USDG) and payout wallet
+      (`OKX_SETTLEMENT_CURRENCY` in `.env`)
+- [ ] Test each service standalone via its route before bundling into a
+      combined listing
+
+## Known integration gaps
+
+These are places where the build brief assumed an interactive-agent MCP
+tool shape that doesn't match what a headless backend can call, or where a
+public API contract needs confirming before go-live:
+
+- **Higgsfield**: the MCP tools available to a chat agent
+  (`media_upload_widget`, confirmed `media_id`/`job_id` chaining, presets)
+  are designed for a human-in-the-loop session. `lib/clients/higgsfield.ts`
+  instead targets a server-to-server API surface using the same operation
+  names and param shapes as the MCP schemas. Confirm exact endpoint paths
+  and auth against Higgsfield's developer docs before go-live.
+- **Canva**: the brief assumed a
+  `start-editing-transaction -> perform-editing-operations -> commit-editing-transaction`
+  flow. Canva's actual tool is a single `edit-design` call keyed by a
+  `transaction_id` from `read-design(open_transaction: true)`, with a
+  `finalize` field (`keep_open` / `commit` / `cancel`). `lib/clients/canva.ts`
+  models the real shape; confirm Connect API scopes
+  (`design:content:write`, `design:meta:read`, `asset:write`) before go-live.
+- **S10 segmentation**: "decompose source image into a trait taxonomy" is
+  implemented as a vision-model description (`proposeTraitTaxonomy` in
+  `lib/clients/anthropic.ts`), not true image segmentation. It's a
+  reasonable starting taxonomy, not a pixel-accurate decomposition.
+- **S8/S10 QC checks** (`lib/qc.ts`, `lib/brand-kit.ts`
+  `checkPaletteDrift`): dominant-color extraction is a coarse 4x4-grid
+  sample, not a proper clustering algorithm. Tune before relying on it for
+  buyer-facing pass/fail decisions.
+- **On-chain data** (`lib/clients/onchain.ts`): implements Moralis directly.
+  If Qwibi already has a Moralis/Covalent client, prefer importing that
+  instead -- this exists so S4 is buildable and testable standalone per the
+  brief.
+
+## Open risks (carried over from the build brief)
+
+- Higgsfield generation cost per call needs to be priced into each A2MCP
+  listing -- confirm credit cost per image/video/motion call before setting
+  buyer-facing prices in `lib/a2mcp/registry.ts` (current `amount` values
+  are placeholders).
+- Canva editing requires the design to already live in Canva or be
+  importable -- not every buyer will have that (S3 handles this via
+  `design_import_url` as a fallback, but import can still fail for
+  non-Canva-native formats).
+- S10 dedup only works within a single collection's combinatorial space.
+  `generateNonRepeatingToken` fails gracefully (returns `null`, caller stops
+  and reports `rejected_collisions`) rather than looping forever when the
+  trait library can't cover the requested collection size.
+- On-chain scans on large collections (10k+ tokens) will hit rate limits on
+  Moralis/Covalent. `lib/clients/onchain.ts` builds in cursor pagination and
+  a 5-minute in-memory TTL cache from day one.
+- Brand-kit QC checks are approximate, not exact -- flagged outputs are
+  "worth a look," not a guaranteed pass/fail. Set buyer expectations in the
+  A2MCP listing copy to avoid disputes over borderline cases.
+- S8 batch generation has variable output count (some requests land in the
+  flagged pile). Pricing in the registry is `per_delivered_asset` for
+  exactly this reason -- confirm this is how OKX's A2MCP settlement expects
+  variable-count billing to work before go-live.
+- NFT-ready export assumes marketplace spec norms that can change. Kept in
+  `config/marketplace-specs.ts` as data, not hardcoded in `lib/export-bundle.ts`,
+  so a marketplace spec update is a config change, not a code change.
