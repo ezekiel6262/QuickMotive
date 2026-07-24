@@ -65,11 +65,13 @@ S11.
 - Next.js 14 (App Router) + TypeScript
 - Google Gemini API (`gemini-2.5-flash-image` / "Nano Banana") for all image
   generation -- direct integration, not through Higgsfield, on cost grounds
+- Google Veo (`veo-3.1-fast-generate-preview`, same Gemini API key) for all
+  video generation (S1's video path, S2) -- not free-tier, real per-second
+  pricing in `lib/clients/veo.ts`
 - Stability AI Developer Platform for img2img strength (S7), non-destructive
   raster region edits (S3), and background removal (S10's trait library)
-- Higgsfield REST API is being phased out entirely (cost) -- S2 (video
-  motion) and S11 (game creation) still depend on it pending a replacement;
-  see "Known integration gaps"
+- Higgsfield is fully removed except S11 (game creation), which needs a
+  self-hosted template rebuild -- see "Known integration gaps"
 - Anthropic SDK (`@anthropic-ai/sdk`) for prompt extraction (S1), edit
   planning (S3), and the orchestrator's tool-use loop
 - `sharp` for server-side image compositing (S10), export resizing (S9),
@@ -134,25 +136,20 @@ These are places where the build brief assumed an interactive-agent MCP
 tool shape that doesn't match what a headless backend can call, or where a
 public API contract needs confirming before go-live:
 
-- **Higgsfield -- being phased out entirely** (cost): `lib/clients/higgsfield.ts`
-  was originally guessed (Bearer auth, `POST /v1/generate_image`,
-  synchronous response) and confirmed wrong against a live deployment
-  (404, since the configured URL was actually Higgsfield's separate MCP
-  endpoint). Rewritten against the official JS SDK source
-  (github.com/higgsfield-ai/higgsfield-js): base URL
-  `https://platform.higgsfield.ai`, auth header `Authorization: Key
-  KEY_ID:KEY_SECRET` (not Bearer), model-slug-based endpoints
-  (`POST /v1/{modelSlug}`), async submit-then-poll
-  (`GET /requests/{id}/status`). Image generation moved to Gemini,
-  img2img/outpaint/background-removal moved to Stability AI (both below).
-  **Still on Higgsfield, not yet replaced**: S2 (video motion) and S11
-  (game creation) -- both need a provider decision before they'll work;
-  see the build brief's original service descriptions for what each
-  needs. The remaining Higgsfield client code (`generateVideo`,
-  `motionControl`, `reframe`, `upscaleVideo`, `getGameCreationInstructions`,
-  `deployGame`, `publishGame`) still uses placeholder `UNVERIFIED` model
-  slugs and is expected to 404 the same way the image endpoint originally
-  did.
+- **Higgsfield -- removed except S11**: `lib/clients/higgsfield.ts` was
+  originally guessed (Bearer auth, `POST /v1/generate_image`, synchronous
+  response) and confirmed wrong against a live deployment (404, since the
+  configured URL was actually Higgsfield's separate MCP endpoint).
+  Rewritten against the official JS SDK source
+  (github.com/higgsfield-ai/higgsfield-js), then phased out entirely on
+  cost grounds: image generation moved to Gemini, video moved to Veo,
+  img2img/outpaint/background-removal moved to Stability AI (all below).
+  **Only S11 (game creation) still imports it** --
+  `getGameCreationInstructions`/`deployGame`/`publishGame` still use
+  placeholder `UNVERIFIED` model slugs and are expected to fail the same
+  way the image endpoint originally did. S11 needs a full rebuild as
+  self-hosted static game templates (no third-party game-hosting API) --
+  not yet started.
 - **Gemini** (`lib/clients/gemini.ts`, `gemini-2.5-flash-image` / "Nano
   Banana"): handles image generation for S1 text-to-image, S6, S8, and
   S10's trait library, as a direct, cheaper replacement for Higgsfield.
@@ -162,6 +159,24 @@ public API contract needs confirming before go-live:
   accounted for in the parallel `Promise.all` fan-outs in S6/S8/S10 (a
   burst of concurrent calls could 429); no handling yet for
   `promptFeedback` safety blocks beyond surfacing the error.
+- **Veo** (`lib/clients/veo.ts`, `veo-3.1-fast-generate-preview`): replaces
+  Higgsfield for S1's video path and S2 (video motion). Same Gemini API
+  key as image generation, different model -- confirmed request/response
+  shape against multiple independent sources (Google AI Developer forum,
+  Google Cloud docs). Untested live as of this writing. Two real risks
+  worth reading before relying on this:
+  - **Cost**: standard Veo 3.1 is $0.40/sec ($3.20 for an 8s clip); this
+    client defaults to the "fast" tier (~$0.10-0.15/sec, ~$0.75-1.20 for
+    8s) to stay closer to the rest of this suite's cost profile, but
+    that's still well above S2's current flat $0.40/call placeholder
+    price in `lib/a2mcp/registry.ts` -- that price needs revisiting before
+    go-live, not just the model tier.
+  - **Timeout**: video generation commonly takes 30s-2min+, and this
+    client polls synchronously inside a single request (for consistency
+    with this suite's other providers). That will likely exceed Vercel's
+    default serverless function timeout. Needs a webhook or async-job
+    redesign (return `job_id` immediately, poll a separate status
+    endpoint) before relying on it in production.
 - **Stability AI** (`lib/clients/stability.ts`): three operations, all
   confirmed against a third-party proxy mirroring Stability's own
   parameters plus search-indexed doc snippets, since Stability's docs
