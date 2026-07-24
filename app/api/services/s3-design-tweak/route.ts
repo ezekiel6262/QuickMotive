@@ -3,7 +3,7 @@ import { z } from "zod";
 import { parseBody, requireBuyerWallet, handleRouteError, ApiError } from "@/lib/api-helpers";
 import { withJob } from "@/lib/jobs";
 import * as canva from "@/lib/clients/canva";
-import * as higgsfield from "@/lib/clients/higgsfield";
+import * as stability from "@/lib/clients/stability";
 import { planEditOperations } from "@/lib/clients/anthropic";
 import { getSupabaseAdmin } from "@/lib/supabase/client";
 import { getToolDefinition } from "@/lib/a2mcp/registry";
@@ -24,8 +24,9 @@ const bodySchema = z
 /**
  * S3: Graphic design smart edit. Canva designs go through the
  * read-design -> edit-design -> commit -> export transaction flow;
- * non-Canva raster assets get a non-destructive region edit via Higgsfield
- * outpaint so only the flagged region changes.
+ * non-Canva raster assets get a non-destructive region edit via Stability
+ * AI (background cutout -> inverted-alpha mask -> inpaint) so only the
+ * background changes and the foreground subject stays pixel-identical.
  */
 export async function POST(req: Request) {
   try {
@@ -39,11 +40,11 @@ export async function POST(req: Request) {
         const supabase = getSupabaseAdmin();
 
         if (body.raster_image_url) {
-          const result = await higgsfield.outpaintImage({
-            imageId: body.raster_image_url,
-            aspectRatio: "auto"
+          const result = await stability.editBackgroundRegion({
+            imageUrl: body.raster_image_url,
+            instruction: body.instruction
           });
-          const url = result.assets[0]?.url ?? null;
+          const url = result.url;
           await supabase.from("media_assets").insert({
             job_id: jobId,
             type: "image",
