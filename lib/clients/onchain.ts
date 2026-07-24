@@ -66,7 +66,8 @@ export async function resolveCollectionMetadata(params: {
     { headers: { "X-API-Key": requireMoralisKey() } }
   );
   if (!res.ok) {
-    throw new Error(`Moralis collection metadata failed: ${res.status}`);
+    const body = await res.text().catch(() => "");
+    throw new Error(`Moralis collection metadata failed: ${res.status} ${body}`);
   }
   const data = (await res.json()) as {
     name?: string;
@@ -100,7 +101,8 @@ export async function listCollectionTokensPage(params: {
     if (res.status === 429) {
       throw new Error("Moralis rate limit hit -- retry with backoff, do not spin");
     }
-    throw new Error(`Moralis token page failed: ${res.status}`);
+    const body = await res.text().catch(() => "");
+    throw new Error(`Moralis token page failed: ${res.status} ${body}`);
   }
 
   const data = (await res.json()) as {

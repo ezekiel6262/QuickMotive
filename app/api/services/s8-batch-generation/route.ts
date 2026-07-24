@@ -23,7 +23,7 @@ interface GeneratedItem {
 }
 
 async function generateOne(prompt: string, aspectRatio: string): Promise<GeneratedItem> {
-  const result = await higgsfield.generateImage({ model: "nano_banana_pro", prompt, aspectRatio });
+  const result = await higgsfield.generateImage({ prompt, aspectRatio });
   const url = result.assets[0]?.url;
   if (!url) throw new Error("Generation returned no asset");
   return { url, higgsfieldJobId: result.job_id };

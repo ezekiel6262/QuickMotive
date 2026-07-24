@@ -42,7 +42,6 @@ export async function POST(req: Request) {
         const generations = await Promise.all(
           Array.from({ length: body.count }, () =>
             higgsfield.generateImage({
-              model: "nano_banana_pro",
               prompt: finalPrompt,
               medias: body.style_reference_url
                 ? [{ value: body.style_reference_url, role: "style_reference" }]

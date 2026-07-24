@@ -29,7 +29,6 @@ export async function POST(req: Request) {
       async (jobId) => {
         const result = body.motion_description
           ? await higgsfield.generateVideo({
-              model: "kling3_0",
               prompt: body.motion_description,
               durationSeconds: body.max_duration_seconds,
               medias: [{ value: body.image_url, role: "start_image" }]
