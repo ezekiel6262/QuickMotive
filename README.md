@@ -149,17 +149,24 @@ public API contract needs confirming before go-live:
   timeout for slower jobs (video especially) -- the SDK's `hf_webhook`
   callback is the probable fix.
 - **Gemini** (`lib/clients/gemini.ts`, `gemini-2.5-flash-image` / "Nano
-  Banana"): handles all image generation (S1 text-to-image, S6, S7, S8, and
-  S10's trait library) as a direct, cheaper replacement for Higgsfield.
+  Banana"): handles image generation for S1 text-to-image, S6, S8, and
+  S10's trait library, as a direct, cheaper replacement for Higgsfield.
   Confirmed against Google's docs/cookbook before wiring (unlike the first
   Higgsfield pass), but still untested live end-to-end as of this writing
   -- confirm a real `GEMINI_API_KEY` call succeeds before relying on it.
-  Known gaps: no numeric img2img "strength" equivalent (S7 steers variation
-  via prompt wording instead, a materially different mechanism from the
-  original strength-based approach); free-tier rate limits aren't accounted
-  for in the parallel `Promise.all` fan-outs in S6/S8/S10 (a burst of
-  concurrent calls could 429); no handling yet for `promptFeedback` safety
-  blocks beyond surfacing the error.
+  Known gaps: free-tier rate limits aren't accounted for in the parallel
+  `Promise.all` fan-outs in S6/S8/S10 (a burst of concurrent calls could
+  429); no handling yet for `promptFeedback` safety blocks beyond
+  surfacing the error.
+- **fal.ai / Qwen-Image** (`lib/clients/fal.ts`, S7 only): Gemini has no
+  numeric img2img "strength" parameter, so S7 (NFT variation, which
+  specifically needs one) uses `fal-ai/qwen-image/image-to-image` instead
+  via fal.ai's queue API -- confirmed real `strength` semantics (0 =
+  preserve original, 1 = fully remake) against the model's published input
+  schema. Pay-per-use, not a subscription. Still untested live as of this
+  writing -- confirm a real `FAL_API_KEY` call succeeds before relying on
+  it. This is the only service using fal.ai; everything else stays on
+  Gemini or Higgsfield.
 - **Canva**: the brief assumed a
   `start-editing-transaction -> perform-editing-operations -> commit-editing-transaction`
   flow. Canva's actual tool is a single `edit-design` call keyed by a
