@@ -158,15 +158,25 @@ public API contract needs confirming before go-live:
   `Promise.all` fan-outs in S6/S8/S10 (a burst of concurrent calls could
   429); no handling yet for `promptFeedback` safety blocks beyond
   surfacing the error.
-- **fal.ai / Qwen-Image** (`lib/clients/fal.ts`, S7 only): Gemini has no
-  numeric img2img "strength" parameter, so S7 (NFT variation, which
-  specifically needs one) uses `fal-ai/qwen-image/image-to-image` instead
-  via fal.ai's queue API -- confirmed real `strength` semantics (0 =
-  preserve original, 1 = fully remake) against the model's published input
-  schema. Pay-per-use, not a subscription. Still untested live as of this
-  writing -- confirm a real `FAL_API_KEY` call succeeds before relying on
-  it. This is the only service using fal.ai; everything else stays on
-  Gemini or Higgsfield.
+- **Stability AI** (`lib/clients/stability.ts`, S7 only): Gemini has no
+  numeric img2img "strength" parameter -- it's architecturally incapable of
+  this, not just unconfigured (strength is a diffusion-sampling parameter;
+  see the header comment in `lib/clients/gemini.ts`). S7 (NFT variation,
+  which specifically needs one) uses Stability's `sd3.5-medium` model via
+  `POST /v2beta/stable-image/generate/sd3` (multipart form-data, real
+  `strength` 0-1) instead. Request shape confirmed via a third-party proxy
+  mirroring Stability's own parameters, since Stability's docs pages 403'd
+  automated fetches the same as several other vendors' did today --
+  reasonably confident but still untested live as of this writing, and
+  note that Stability AI "Brand Studio" credits are a separate product
+  from the Developer Platform for most account tiers (Brand Studio API
+  access is Enterprise-only) -- confirm your key/credits work against
+  `api.stability.ai` specifically. This is the only service using
+  Stability; everything else stays on Gemini or Higgsfield.
+  (An earlier pass wired this via fal.ai's Qwen-Image instead, since it
+  has the same real strength parameter and no docs-access issues -- worth
+  reconsidering if Stability credits turn out not to cover the Developer
+  Platform after all.)
 - **Canva**: the brief assumed a
   `start-editing-transaction -> perform-editing-operations -> commit-editing-transaction`
   flow. Canva's actual tool is a single `edit-design` call keyed by a

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { parseBody, requireBuyerWallet, handleRouteError } from "@/lib/api-helpers";
 import { withJob } from "@/lib/jobs";
-import * as fal from "@/lib/clients/fal";
+import * as stability from "@/lib/clients/stability";
 import { similarityScore } from "@/lib/image-similarity";
 import { getSupabaseAdmin } from "@/lib/supabase/client";
 import { getToolDefinition } from "@/lib/a2mcp/registry";
@@ -30,8 +30,8 @@ export async function POST(req: Request) {
       async (jobId) => {
         const supabase = getSupabaseAdmin();
 
-        // Real img2img with a strength dial, via Qwen-Image on fal.ai --
-        // Gemini (used elsewhere in this suite) has no equivalent
+        // Real img2img with a strength dial, via Stability AI (sd3.5-medium)
+        // -- Gemini (used elsewhere in this suite) has no equivalent
         // mechanism. body.strength maps directly to the model's denoising
         // strength (0 = preserve original, 1 = fully remake).
         const variationPrompt =
@@ -39,7 +39,7 @@ export async function POST(req: Request) {
 
         const generations = await Promise.all(
           Array.from({ length: body.variation_count }, () =>
-            fal.qwenImageToImage({
+            stability.imageToImage({
               imageUrl: body.source_image_url,
               prompt: variationPrompt,
               strength: body.strength
