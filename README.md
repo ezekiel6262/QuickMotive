@@ -99,9 +99,27 @@ any route that touches the database.
       service, priced individually per `lib/a2mcp/registry.ts`)
 - [ ] Set spending limits/allowlists as required by the platform
 - [ ] Confirm settlement currency (USDT or USDG) and payout wallet
-      (`OKX_SETTLEMENT_CURRENCY` in `.env`)
+      (`OKX_SETTLEMENT_CURRENCY` in `.env`) -- `GET /api/admin/okx-balance`
+      checks the configured settlement currency actually shows up in the
+      OKX account balance via the exchange API (see below)
 - [ ] Test each service standalone via its route before bundling into a
       combined listing
+
+### OKX exchange API vs. Agentic Wallet/OnchainOS
+
+Two separate OKX integration points, easy to conflate:
+
+- **OKX exchange API (v5)**: `OKX_API_KEY` / `OKX_SECRET_KEY` /
+  `OKX_PASSPHRASE`, from OKX's regular exchange API dashboard. Wired via
+  `lib/clients/okx.ts` (HMAC-SHA256 signed requests) and used by
+  `GET /api/admin/okx-balance` to confirm the settlement currency is
+  actually present in the account -- an ops check, not a buyer-facing
+  A2MCP tool. Unauthenticated route; add real access control before
+  relying on it outside manual testing.
+- **OKX Agentic Wallet / OnchainOS ASP registration**: a platform-side
+  setup step (wallet identity, ASP registration, tool schema registration)
+  done through OKX.ai/OnchainOS directly, not something this app
+  authenticates to via API credentials.
 
 ## Known integration gaps
 
