@@ -14,7 +14,7 @@ export const A2MCP_TOOL_REGISTRY: A2mcpToolDefinition[] = [
     id: "s1_prompt_bridge",
     name: "Image/Video <-> Text Prompt Bridge",
     summary:
-      "Given media, return a structured re-usable prompt. Given text, generate an image or video via Higgsfield.",
+      "Given media, return a structured re-usable prompt. Given text, generate an image (Gemini) or video (Veo).",
     route: "/api/services/s1-prompt-bridge",
     pricing: { unit: "per_call", amount: 0.05, currency: "USDT" },
     latencyExpectation: "sub-second to a few seconds",
