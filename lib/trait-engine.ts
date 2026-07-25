@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { getSupabaseAdmin } from "@/lib/supabase/client";
-import * as higgsfield from "@/lib/clients/higgsfield";
 import * as gemini from "@/lib/clients/gemini";
+import * as stability from "@/lib/clients/stability";
 import type { TraitLibraryRow } from "@/lib/supabase/types";
 
 const STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET ?? "quickmotive-assets";
@@ -14,10 +14,10 @@ export interface TraitCategoryDefinition {
 
 /**
  * Step 2: generate a layered, transparent-background asset per trait
- * option via Gemini (image gen) + Higgsfield (background removal --
- * unverified model slug, see lib/clients/higgsfield.ts), and persist it to
- * trait_library. Idempotent per (collection, category, option) -- re-running
- * with the same taxonomy does not duplicate rows (unique constraint).
+ * option via Gemini (image gen) + Stability AI (background removal), and
+ * persist it to trait_library. Idempotent per (collection, category,
+ * option) -- re-running with the same taxonomy does not duplicate rows
+ * (unique constraint).
  */
 export async function buildTraitLibrary(params: {
   collectionId: string;
@@ -36,8 +36,8 @@ export async function buildTraitLibrary(params: {
       const firstAsset = generated.assets[0];
       if (!firstAsset) throw new Error(`No asset returned for trait ${category.category}:${option}`);
 
-      const cutout = await higgsfield.removeBackground({ mediaId: firstAsset.url, mediaType: "image" });
-      const assetUrl = cutout.assets[0]?.url ?? firstAsset.url;
+      const cutout = await stability.removeBackground({ imageUrl: firstAsset.url });
+      const assetUrl = cutout.url;
 
       const { data, error } = await supabase
         .from("trait_library")

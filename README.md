@@ -65,8 +65,13 @@ S11.
 - Next.js 14 (App Router) + TypeScript
 - Google Gemini API (`gemini-2.5-flash-image` / "Nano Banana") for all image
   generation -- direct integration, not through Higgsfield, on cost grounds
-- Higgsfield REST API for video/motion/outpaint/background-removal/upscale/
-  reframe/game creation (image generation moved off it, see above)
+- Google Veo (`veo-3.1-fast-generate-preview`, same Gemini API key) for all
+  video generation (S1's video path, S2) -- not free-tier, real per-second
+  pricing in `lib/clients/veo.ts`
+- Stability AI Developer Platform for img2img strength (S7), non-destructive
+  raster region edits (S3), and background removal (S10's trait library)
+- Higgsfield is fully removed except S11 (game creation), which needs a
+  self-hosted template rebuild -- see "Known integration gaps"
 - Anthropic SDK (`@anthropic-ai/sdk`) for prompt extraction (S1), edit
   planning (S3), and the orchestrator's tool-use loop
 - `sharp` for server-side image compositing (S10), export resizing (S9),
@@ -131,52 +136,75 @@ These are places where the build brief assumed an interactive-agent MCP
 tool shape that doesn't match what a headless backend can call, or where a
 public API contract needs confirming before go-live:
 
-- **Higgsfield**: `lib/clients/higgsfield.ts` was originally guessed
-  (Bearer auth, `POST /v1/generate_image`, synchronous response) and
-  confirmed wrong against a live deployment (404, since the configured URL
-  was actually Higgsfield's separate MCP endpoint). Rewritten against the
-  official JS SDK source (github.com/higgsfield-ai/higgsfield-js): base URL
-  `https://platform.higgsfield.ai`, auth header `Authorization: Key
-  KEY_ID:KEY_SECRET` (not Bearer), model-slug-based endpoints
-  (`POST /v1/{modelSlug}`), async submit-then-poll
-  (`GET /requests/{id}/status`). All image generation has since moved off
-  Higgsfield onto Gemini (see below) on cost grounds -- Higgsfield remains
-  wired only for video/motion/outpaint/background-removal/upscale/
-  reframe/game creation, all still using placeholder model slugs marked
-  `UNVERIFIED` in the client and likely to 404 the same way the image
-  endpoint did until confirmed against Higgsfield's model catalog. Also
-  unconfirmed: whether polling completes within a single Vercel function's
-  timeout for slower jobs (video especially) -- the SDK's `hf_webhook`
-  callback is the probable fix.
+- **Higgsfield -- removed except S11**: `lib/clients/higgsfield.ts` was
+  originally guessed (Bearer auth, `POST /v1/generate_image`, synchronous
+  response) and confirmed wrong against a live deployment (404, since the
+  configured URL was actually Higgsfield's separate MCP endpoint).
+  Rewritten against the official JS SDK source
+  (github.com/higgsfield-ai/higgsfield-js), then phased out entirely on
+  cost grounds: image generation moved to Gemini, video moved to Veo,
+  img2img/outpaint/background-removal moved to Stability AI (all below).
+  **Only S11 (game creation) still imports it** --
+  `getGameCreationInstructions`/`deployGame`/`publishGame` still use
+  placeholder `UNVERIFIED` model slugs and are expected to fail the same
+  way the image endpoint originally did. S11 needs a full rebuild as
+  self-hosted static game templates (no third-party game-hosting API) --
+  not yet started.
 - **Gemini** (`lib/clients/gemini.ts`, `gemini-2.5-flash-image` / "Nano
   Banana"): handles image generation for S1 text-to-image, S6, S8, and
   S10's trait library, as a direct, cheaper replacement for Higgsfield.
   Confirmed against Google's docs/cookbook before wiring (unlike the first
-  Higgsfield pass), but still untested live end-to-end as of this writing
-  -- confirm a real `GEMINI_API_KEY` call succeeds before relying on it.
-  Known gaps: free-tier rate limits aren't accounted for in the parallel
-  `Promise.all` fan-outs in S6/S8/S10 (a burst of concurrent calls could
-  429); no handling yet for `promptFeedback` safety blocks beyond
-  surfacing the error.
-- **Stability AI** (`lib/clients/stability.ts`, S7 only): Gemini has no
-  numeric img2img "strength" parameter -- it's architecturally incapable of
-  this, not just unconfigured (strength is a diffusion-sampling parameter;
-  see the header comment in `lib/clients/gemini.ts`). S7 (NFT variation,
-  which specifically needs one) uses Stability's `sd3.5-medium` model via
-  `POST /v2beta/stable-image/generate/sd3` (multipart form-data, real
-  `strength` 0-1) instead. Request shape confirmed via a third-party proxy
-  mirroring Stability's own parameters, since Stability's docs pages 403'd
-  automated fetches the same as several other vendors' did today --
-  reasonably confident but still untested live as of this writing, and
-  note that Stability AI "Brand Studio" credits are a separate product
-  from the Developer Platform for most account tiers (Brand Studio API
-  access is Enterprise-only) -- confirm your key/credits work against
-  `api.stability.ai` specifically. This is the only service using
-  Stability; everything else stays on Gemini or Higgsfield.
-  (An earlier pass wired this via fal.ai's Qwen-Image instead, since it
-  has the same real strength parameter and no docs-access issues -- worth
-  reconsidering if Stability credits turn out not to cover the Developer
-  Platform after all.)
+  Higgsfield pass). **Confirmed working live** (S1 end-to-end tested
+  against the deployed app). Known gaps: free-tier rate limits aren't
+  accounted for in the parallel `Promise.all` fan-outs in S6/S8/S10 (a
+  burst of concurrent calls could 429); no handling yet for
+  `promptFeedback` safety blocks beyond surfacing the error.
+- **Veo** (`lib/clients/veo.ts`, `veo-3.1-fast-generate-preview`): replaces
+  Higgsfield for S1's video path and S2 (video motion). Same Gemini API
+  key as image generation, different model -- confirmed request/response
+  shape against multiple independent sources (Google AI Developer forum,
+  Google Cloud docs). Untested live as of this writing. Two real risks
+  worth reading before relying on this:
+  - **Cost**: standard Veo 3.1 is $0.40/sec ($3.20 for an 8s clip); this
+    client defaults to the "fast" tier (~$0.10-0.15/sec, ~$0.75-1.20 for
+    8s) to stay closer to the rest of this suite's cost profile, but
+    that's still well above S2's current flat $0.40/call placeholder
+    price in `lib/a2mcp/registry.ts` -- that price needs revisiting before
+    go-live, not just the model tier.
+  - **Timeout**: video generation commonly takes 30s-2min+, and this
+    client polls synchronously inside a single request (for consistency
+    with this suite's other providers). That will likely exceed Vercel's
+    default serverless function timeout. Needs a webhook or async-job
+    redesign (return `job_id` immediately, poll a separate status
+    endpoint) before relying on it in production.
+- **Stability AI** (`lib/clients/stability.ts`): three operations, all
+  confirmed against a third-party proxy mirroring Stability's own
+  parameters plus search-indexed doc snippets, since Stability's docs
+  pages 403'd automated fetches the same as several other vendors' did.
+  - `imageToImage` (S7): Gemini has no numeric img2img "strength"
+    parameter -- it's architecturally incapable of this, not just
+    unconfigured (strength is a diffusion-sampling parameter; see the
+    header comment in `lib/clients/gemini.ts`). Uses `sd3.5-medium` via
+    `POST /v2beta/stable-image/generate/sd3`. **Confirmed working live**
+    (S7 end-to-end tested against the deployed app).
+  - `editBackgroundRegion` (S3's raster path): the original Higgsfield
+    call here (`outpaintImage` with `aspectRatio: "auto"`) never actually
+    matched the use case -- outpaint extends canvas outward, it doesn't
+    edit an existing region, which is what "make the background blue"
+    style instructions need. Replaced with a composed pipeline: cut out
+    the foreground (`edit/remove-background`), invert its alpha channel
+    into a mask, then `edit/inpaint` with that mask + the buyer's
+    instruction -- so only the background changes and the subject stays
+    pixel-identical. Untested live as of this writing.
+  - `removeBackground` (S10's trait library): `edit/remove-background`.
+    Untested live as of this writing.
+  - Note: Stability AI "Brand Studio" credits are a separate product from
+    the Developer Platform for most account tiers (Brand Studio API
+    access is Enterprise-only) -- confirmed in this case that the
+    account's credits do cover `api.stability.ai` directly.
+  (An earlier pass wired S7 via fal.ai's Qwen-Image instead, before
+  switching to Stability for its free credits -- fal.ai remains a fallback
+  worth reconsidering if Stability credits run out.)
 - **Canva**: the brief assumed a
   `start-editing-transaction -> perform-editing-operations -> commit-editing-transaction`
   flow. Canva's actual tool is a single `edit-design` call keyed by a

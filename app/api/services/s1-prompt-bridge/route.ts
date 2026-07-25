@@ -3,7 +3,7 @@ import { z } from "zod";
 import { parseBody, requireBuyerWallet, handleRouteError } from "@/lib/api-helpers";
 import { withJob } from "@/lib/jobs";
 import { extractStructuredPrompt } from "@/lib/clients/anthropic";
-import * as higgsfield from "@/lib/clients/higgsfield";
+import * as veo from "@/lib/clients/veo";
 import * as gemini from "@/lib/clients/gemini";
 import { getBrandKit, applyBrandConstraintsToPrompt } from "@/lib/brand-kit";
 import { getSupabaseAdmin } from "@/lib/supabase/client";
@@ -23,8 +23,8 @@ const bodySchema = z
  * S1: Image/Video <-> Text Prompting.
  * media in -> structured, reusable prompt (via Claude vision).
  * text in, image out -> Gemini (gemini-2.5-flash-image / "Nano Banana").
- * text in, video out -> Higgsfield (unverified model slug, see
- * lib/clients/higgsfield.ts).
+ * text in, video out -> Google Veo (see lib/clients/veo.ts for pricing and
+ * a polling-timeout risk on Vercel worth reading before relying on this).
  */
 export async function POST(req: Request) {
   try {
@@ -54,18 +54,17 @@ export async function POST(req: Request) {
         const kit = body.brand_kit_id ? await getBrandKit(body.brand_kit_id) : null;
         const finalPrompt = applyBrandConstraintsToPrompt(body.prompt!, kit);
 
-        const result =
+        const assetUrl =
           body.output_type === "video"
-            ? await higgsfield.generateVideo({ prompt: finalPrompt })
-            : await gemini.generateImage({ prompt: finalPrompt });
+            ? (await veo.generateVideo({ prompt: finalPrompt })).url
+            : (await gemini.generateImage({ prompt: finalPrompt })).assets[0]?.url ?? null;
 
-        const assetUrl = result.assets[0]?.url ?? null;
         await supabase.from("media_assets").insert({
           job_id: jobId,
           type: body.output_type,
           url: assetUrl,
           source_prompt: finalPrompt,
-          metadata: { generation_job_id: result.job_id },
+          metadata: {},
           brand_kit_id: body.brand_kit_id ?? null,
           qc_status: "pending"
         });
