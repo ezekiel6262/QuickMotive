@@ -109,8 +109,18 @@ any route that touches the database.
 
 ## OKX.ai integration checklist
 
-- [ ] Set up OKX Agentic Wallet for the ASP identity (email required)
-- [ ] Register as Agent Service Provider via OnchainOS
+Confirmed via OKX's own published `okx/onchainos-skills` repo (their docs
+site 403s automated fetches, same as several other vendors earlier in this
+project, so this was pulled from the raw GitHub source rather than
+guessed):
+
+- [ ] Install OKX's agent CLI/skill: `npx skills add okx/onchainos-skills`
+- [ ] Set up an OKX Agentic Wallet (email login, no seed phrase) -- identity
+      is **XLayer-chain only**; one identity per wallet per role
+- [ ] Run the ASP eligibility check: `agent pre-check --role asp`
+- [ ] Register as ASP: enter each service **one at a time** (name,
+      description, type, fee) -- the flow requires an explicit "Done" after
+      the last service, batching all fields at once does not skip this
 - [ ] Register each A2MCP tool schema from `GET /api/a2mcp/tools` (one per
       service, priced individually per `lib/a2mcp/registry.ts`)
 - [ ] Set spending limits/allowlists as required by the platform
@@ -120,6 +130,24 @@ any route that touches the database.
       OKX account balance via the exchange API (see below)
 - [ ] Test each service standalone via its route before bundling into a
       combined listing
+
+### x402 payment enforcement -- open gap, blocking real paid listing
+
+OKX requires every A2MCP endpoint to be either genuinely free, or an
+**x402-compliant paid endpoint** (return HTTP 402 with payment terms,
+verify a payment proof via a facilitator on retry, then execute). None of
+this suite's routes do that today -- `withJob` runs the service and
+returns the result unconditionally, same as a free endpoint would, despite
+every tool having a non-zero price in the registry. As-is, these would not
+pass review as paid x402 endpoints.
+
+The concrete facilitator URL and seller-side SDK live behind OKX's
+logged-in developer flow (hence the 403s on unauthenticated fetches).
+Plan: pull the real spec from the ASP registration flow itself once in
+progress (facilitator `/verify`/`/settle` URL, required 402 response
+header format, any OKX seller SDK package name) and wire real payment
+verification into every route from that -- same "fix from live results,
+not guessed docs" pattern used for every other provider in this repo.
 
 ### OKX exchange API vs. Agentic Wallet/OnchainOS
 
