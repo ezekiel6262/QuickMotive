@@ -148,7 +148,9 @@ export async function generateVideo(params: {
   if (final.error) throw new Error(`Veo operation failed: ${final.error.message}`);
 
   const sample = final.response?.generateVideoResponse?.generatedSamples?.[0]?.video;
-  if (!sample?.bytesBase64Encoded) throw new Error("Veo operation completed with no video output");
+  if (!sample?.bytesBase64Encoded) {
+    throw new Error(`Veo operation completed with no video output. Full response: ${JSON.stringify(final.response)}`);
+  }
 
   const buffer = Buffer.from(sample.bytesBase64Encoded, "base64");
   const ext = (sample.mimeType ?? "video/mp4").split("/")[1] ?? "mp4";
