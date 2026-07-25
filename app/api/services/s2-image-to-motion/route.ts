@@ -6,11 +6,17 @@ import * as veo from "@/lib/clients/veo";
 import { getSupabaseAdmin } from "@/lib/supabase/client";
 import { getToolDefinition } from "@/lib/a2mcp/registry";
 
+// Veo's poll loop (lib/clients/veo.ts) can take up to ~2 minutes; without
+// this, Vercel's default function timeout kills the request first, wasting
+// the Veo charge on a call whose result never reaches the caller.
+export const maxDuration = 120;
+
 const bodySchema = z.object({
   buyer_wallet: z.string().optional(),
   image_url: z.string().url(),
   motion_description: z.string().optional(),
-  max_duration_seconds: z.number().int().positive().max(8).default(5),
+  // Veo 3.1 only accepts 4, 6, or 8 seconds -- not an arbitrary integer.
+  max_duration_seconds: z.union([z.literal(4), z.literal(6), z.literal(8)]).default(6),
   resolution: z.enum(["720p", "1080p"]).default("720p")
 });
 

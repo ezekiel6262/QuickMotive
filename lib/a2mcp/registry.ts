@@ -52,17 +52,17 @@ export const A2MCP_TOOL_REGISTRY: A2mcpToolDefinition[] = [
   {
     id: "s2_image_to_motion",
     name: "Video Motion From a Single Image",
-    summary: "Animate a still image with optional motion description via Higgsfield motion_control/generate_video.",
+    summary: "Animate a still image with optional motion description via Google Veo (Gemini API).",
     route: "/api/services/s2-image-to-motion",
     pricing: { unit: "per_call", amount: 0.4, currency: "USDT", notes: "capped duration/resolution to keep pricing predictable" },
-    latencyExpectation: "tens of seconds",
+    latencyExpectation: "tens of seconds to ~2 minutes",
     inputSchema: {
       type: "object",
       required: ["image_url"],
       properties: {
         image_url: { type: "string", format: "uri" },
         motion_description: { type: "string" },
-        max_duration_seconds: { type: "integer", default: 5, maximum: 10 },
+        max_duration_seconds: { type: "integer", enum: [4, 6, 8], default: 6 },
         resolution: { type: "string", enum: ["720p", "1080p"], default: "720p" }
       }
     },

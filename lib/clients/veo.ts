@@ -49,6 +49,16 @@ function requireApiKey(): string {
   return key;
 }
 
+// Veo 3.1 rejects any durationSeconds outside {4, 6, 8} -- confirmed live
+// via a 400 INVALID_ARGUMENT on a value of 5. Snap to the nearest valid
+// value rather than trusting the caller.
+const VALID_DURATIONS = [4, 6, 8] as const;
+function nearestValidDuration(requested: number): number {
+  return VALID_DURATIONS.reduce((closest, v) =>
+    Math.abs(v - requested) < Math.abs(closest - requested) ? v : closest
+  );
+}
+
 async function fetchAsBase64(url: string): Promise<{ data: string; mimeType: string }> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to fetch source image ${url}: ${res.status}`);
@@ -84,7 +94,7 @@ export async function generateVideo(params: {
     throw new Error("generateVideo requires at least one of imageUrl or prompt");
   }
   const image = params.imageUrl ? await fetchAsBase64(params.imageUrl) : null;
-  const durationSeconds = Math.min(params.durationSeconds ?? 5, 8); // Veo caps at 8s
+  const durationSeconds = nearestValidDuration(params.durationSeconds ?? 6);
 
   const instance: Record<string, unknown> = {
     prompt: params.prompt ?? "Animate this image with subtle, natural motion."
@@ -138,7 +148,9 @@ export async function generateVideo(params: {
   if (final.error) throw new Error(`Veo operation failed: ${final.error.message}`);
 
   const sample = final.response?.generateVideoResponse?.generatedSamples?.[0]?.video;
-  if (!sample?.bytesBase64Encoded) throw new Error("Veo operation completed with no video output");
+  if (!sample?.bytesBase64Encoded) {
+    throw new Error(`Veo operation completed with no video output. Full response: ${JSON.stringify(final.response)}`);
+  }
 
   const buffer = Buffer.from(sample.bytesBase64Encoded, "base64");
   const ext = (sample.mimeType ?? "video/mp4").split("/")[1] ?? "mp4";
