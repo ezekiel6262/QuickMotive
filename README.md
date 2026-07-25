@@ -23,8 +23,8 @@ visual-analysis gap.
    |                |                  |                  |          |
 Media gen      Design edit      On-chain scan       Generative-art  Report
 (Gemini image, (Canva Connect   (Moralis/Covalent)   engine (trait  gen (PDF)
-Higgsfield     API)                                  taxonomy +
-video/motion)                                        hash dedup)
+Veo video,     API)                                  taxonomy +
+Stability edit)                                      hash dedup)
         |
    Brand-lock store (palette/type/logo/style refs) -- every generation
    call above can optionally pull constraints from here
@@ -70,8 +70,11 @@ S11.
   pricing in `lib/clients/veo.ts`
 - Stability AI Developer Platform for img2img strength (S7), non-destructive
   raster region edits (S3), and background removal (S10's trait library)
-- Higgsfield is fully removed except S11 (game creation), which needs a
-  self-hosted template rebuild -- see "Known integration gaps"
+- No Higgsfield dependency anywhere in this suite anymore. S11 (game
+  creation) is fully self-hosted: `lib/games/templates/` has three
+  self-contained HTML5/Canvas game pages (endless runner, platformer,
+  match-3), skinned with the buyer's character art and uploaded to
+  Supabase Storage as static files -- no third-party game API
 - Anthropic SDK (`@anthropic-ai/sdk`) for prompt extraction (S1), edit
   planning (S3), and the orchestrator's tool-use loop
 - `sharp` for server-side image compositing (S10), export resizing (S9),
@@ -136,20 +139,16 @@ These are places where the build brief assumed an interactive-agent MCP
 tool shape that doesn't match what a headless backend can call, or where a
 public API contract needs confirming before go-live:
 
-- **Higgsfield -- removed except S11**: `lib/clients/higgsfield.ts` was
+- **Higgsfield -- fully removed**: `lib/clients/higgsfield.ts` was
   originally guessed (Bearer auth, `POST /v1/generate_image`, synchronous
   response) and confirmed wrong against a live deployment (404, since the
   configured URL was actually Higgsfield's separate MCP endpoint).
   Rewritten against the official JS SDK source
   (github.com/higgsfield-ai/higgsfield-js), then phased out entirely on
   cost grounds: image generation moved to Gemini, video moved to Veo,
-  img2img/outpaint/background-removal moved to Stability AI (all below).
-  **Only S11 (game creation) still imports it** --
-  `getGameCreationInstructions`/`deployGame`/`publishGame` still use
-  placeholder `UNVERIFIED` model slugs and are expected to fail the same
-  way the image endpoint originally did. S11 needs a full rebuild as
-  self-hosted static game templates (no third-party game-hosting API) --
-  not yet started.
+  img2img/outpaint/background-removal moved to Stability AI, S11 rebuilt
+  as self-hosted static templates (all below). The client file itself has
+  been deleted -- nothing in this repo depends on Higgsfield anymore.
 - **Gemini** (`lib/clients/gemini.ts`, `gemini-2.5-flash-image` / "Nano
   Banana"): handles image generation for S1 text-to-image, S6, S8, and
   S10's trait library, as a direct, cheaper replacement for Higgsfield.
@@ -224,6 +223,21 @@ public API contract needs confirming before go-live:
   If Qwibi already has a Moralis/Covalent client, prefer importing that
   instead -- this exists so S4 is buildable and testable standalone per the
   brief.
+- **S11 game templates** (`lib/games/`): rebuilt from scratch as
+  self-hosted static HTML5/Canvas pages instead of depending on any
+  third-party game-hosting API. Three templates (`endless_runner`,
+  `platformer`, `match_3`), each a self-contained page skinned with the
+  buyer's character art via `<img>` src, uploaded to Supabase Storage as
+  a single `.html` file (`games/{uuid}.html`) and returned as the
+  `play_url`. Verified locally: generated each template with a test image
+  URL and loaded it in headless Chromium -- no JS runtime errors, and each
+  template's image-load-failure fallback (colored rectangle in place of
+  the character) renders correctly when the character image can't load.
+  Not yet tested against a real deployed character asset URL. Known
+  simplifications: match-3 does a single clear-and-refill pass with no
+  cascade re-matching; the platformer has one fixed layout, no level
+  variation; none of the three persist high scores or send completion
+  events back to the backend.
 
 ## Open risks (carried over from the build brief)
 
