@@ -12,9 +12,11 @@
  * Request: { instances: [{ prompt, image: { bytesBase64Encoded, mimeType } }],
  * parameters: { aspectRatio, durationSeconds, ... } }.
  * This kicks off a long-running operation, not a synchronous response:
- * poll GET /v1beta/{operation_name} until `done: true`, then the video
- * comes back as base64 at
- * response.generateVideoResponse.generatedSamples[0].video.bytesBase64Encoded.
+ * poll GET /v1beta/{operation_name} until `done: true`, then the video is
+ * at response.generateVideoResponse.generatedSamples[0].video -- as either
+ * inline base64 (`bytesBase64Encoded`) or, confirmed live, a File API
+ * download `uri` (e.g. ".../files/{id}:download?alt=media") that itself
+ * requires the `x-goog-api-key` header to fetch.
  *
  * PRICING WARNING: standard Veo 3.1 is $0.40/sec ($3.20 for an 8s clip).
  * This client defaults to the "fast" tier (veo-3.1-fast-generate-preview,
@@ -73,7 +75,7 @@ interface OperationResponse {
   error?: { message: string };
   response?: {
     generateVideoResponse?: {
-      generatedSamples?: Array<{ video?: { bytesBase64Encoded?: string; mimeType?: string } }>;
+      generatedSamples?: Array<{ video?: { bytesBase64Encoded?: string; uri?: string; mimeType?: string } }>;
     };
   };
 }
@@ -148,17 +150,30 @@ export async function generateVideo(params: {
   if (final.error) throw new Error(`Veo operation failed: ${final.error.message}`);
 
   const sample = final.response?.generateVideoResponse?.generatedSamples?.[0]?.video;
-  if (!sample?.bytesBase64Encoded) {
+  if (!sample?.bytesBase64Encoded && !sample?.uri) {
     throw new Error(`Veo operation completed with no video output. Full response: ${JSON.stringify(final.response)}`);
   }
 
-  const buffer = Buffer.from(sample.bytesBase64Encoded, "base64");
-  const ext = (sample.mimeType ?? "video/mp4").split("/")[1] ?? "mp4";
+  let buffer: Buffer;
+  let mimeType = sample.mimeType ?? "video/mp4";
+  if (sample.bytesBase64Encoded) {
+    buffer = Buffer.from(sample.bytesBase64Encoded, "base64");
+  } else {
+    const fileRes = await fetch(sample.uri!, { headers: { "x-goog-api-key": requireApiKey() } });
+    if (!fileRes.ok) {
+      const body = await fileRes.text().catch(() => "");
+      throw new Error(`Failed to download Veo output from ${sample.uri}: ${fileRes.status} ${body}`);
+    }
+    mimeType = fileRes.headers.get("content-type") ?? mimeType;
+    buffer = Buffer.from(await fileRes.arrayBuffer());
+  }
+
+  const ext = mimeType.split("/")[1] ?? "mp4";
   const path = `generated/${randomUUID()}.${ext}`;
 
   const supabase = getSupabaseAdmin();
   const { error } = await supabase.storage.from(STORAGE_BUCKET).upload(path, buffer, {
-    contentType: sample.mimeType ?? "video/mp4",
+    contentType: mimeType,
     upsert: true
   });
   if (error) throw new Error(`Failed to upload generated video: ${error.message}`);
