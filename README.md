@@ -41,19 +41,23 @@ convenience entry point, itself billed as the `orchestrator` service_type.
 The full catalog, with JSON Schema input/output and pricing, is defined in
 `lib/a2mcp/registry.ts` and served live at `GET /api/a2mcp/tools`. Summary:
 
-| ID  | Service | Route |
-|-----|---------|-------|
-| S1  | Image/video <-> text prompting | `/api/services/s1-prompt-bridge` |
-| S2  | Video motion from a single image | `/api/services/s2-image-to-motion` |
-| S3  | Graphic design smart edit | `/api/services/s3-design-tweak` |
-| S4  | On-chain NFT scanner + PDF report | `/api/services/s4-nft-scanner-report` |
-| S5  | Brand-lock kit definition | `/api/services/s5-brand-kit` |
-| S6  | NFT image generation from description | `/api/services/s6-nft-image-gen` |
-| S7  | NFT variation from a source image | `/api/services/s7-nft-variation` |
-| S8  | Batch generation with QC gating | `/api/services/s8-batch-generation` |
-| S9  | NFT-ready multi-format export | `/api/services/s9-export-bundle` |
-| S10 | Trait-based generative art engine | `/api/services/s10-trait-engine` |
-| S11 | Templated game from a character | `/api/services/s11-game-template` |
+| ID  | Service | Route | Live-verified |
+|-----|---------|-------|---------------|
+| S1  | Image/video <-> text prompting | `/api/services/s1-prompt-bridge` | ✅ |
+| S2  | Video motion from a single image | `/api/services/s2-image-to-motion` | ✅ |
+| S3  | Graphic design smart edit | `/api/services/s3-design-tweak` | ✅ |
+| S4  | On-chain NFT scanner + PDF report | `/api/services/s4-nft-scanner-report` | ✅ |
+| S5  | Brand-lock kit definition | `/api/services/s5-brand-kit` | ✅ |
+| S6  | NFT image generation from description | `/api/services/s6-nft-image-gen` | ✅ |
+| S7  | NFT variation from a source image | `/api/services/s7-nft-variation` | ✅ |
+| S8  | Batch generation with QC gating | `/api/services/s8-batch-generation` | ✅ |
+| S9  | NFT-ready multi-format export | `/api/services/s9-export-bundle` | ✅ |
+| S10 | Trait-based generative art engine | `/api/services/s10-trait-engine` | ✅ |
+| S11 | Templated game from a character | `/api/services/s11-game-template` | ✅ |
+
+All 11 services have been exercised end-to-end against the deployed app
+(`https://quick-motive.vercel.app`) with real provider credentials -- see
+"Known integration gaps" below for what each test surfaced and fixed.
 
 Build sequence followed section 8 of the original brief: S4/S1 first
 (reuse-heavy, validates payment flow), then S5 (brand-lock, so S6/S7/S8
@@ -160,22 +164,33 @@ public API contract needs confirming before go-live:
   `promptFeedback` safety blocks beyond surfacing the error.
 - **Veo** (`lib/clients/veo.ts`, `veo-3.1-fast-generate-preview`): replaces
   Higgsfield for S1's video path and S2 (video motion). Same Gemini API
-  key as image generation, different model -- confirmed request/response
-  shape against multiple independent sources (Google AI Developer forum,
-  Google Cloud docs). Untested live as of this writing. Two real risks
-  worth reading before relying on this:
+  key as image generation, different model. **Confirmed working live** (S2
+  end-to-end tested against the deployed app) after three rounds of fixing
+  what live testing actually surfaced, none of which were visible from docs
+  alone:
+  - `durationSeconds` only accepts `4`, `6`, or `8` -- not an arbitrary
+    integer in that range, despite the API's own error message reading
+    "between 4 and 8, inclusive." The route schema and client both now
+    reject/snap to one of those three values.
+  - The completed operation's video can come back as either inline
+    `bytesBase64Encoded` or a File API download `uri` (confirmed live: this
+    account's generations return the `uri` form). The client now handles
+    both, authenticating to the `uri` with the same `x-goog-api-key`.
+  - **Timeout**: video generation commonly takes 30s-2min+, and this client
+    polls synchronously inside a single request. `maxDuration = 120` is now
+    set on the S2 route so Vercel doesn't kill the request first -- but
+    that only takes effect if your Vercel plan actually honors a 120s
+    function duration (Hobby's default ceiling is lower unless Fluid
+    Compute is enabled). Confirm against your plan before relying on this
+    for buyer traffic; the more robust fix long-term is still a webhook or
+    async-job redesign (return `job_id` immediately, poll a separate status
+    endpoint) rather than a longer synchronous timeout.
   - **Cost**: standard Veo 3.1 is $0.40/sec ($3.20 for an 8s clip); this
     client defaults to the "fast" tier (~$0.10-0.15/sec, ~$0.75-1.20 for
     8s) to stay closer to the rest of this suite's cost profile, but
     that's still well above S2's current flat $0.40/call placeholder
     price in `lib/a2mcp/registry.ts` -- that price needs revisiting before
     go-live, not just the model tier.
-  - **Timeout**: video generation commonly takes 30s-2min+, and this
-    client polls synchronously inside a single request (for consistency
-    with this suite's other providers). That will likely exceed Vercel's
-    default serverless function timeout. Needs a webhook or async-job
-    redesign (return `job_id` immediately, poll a separate status
-    endpoint) before relying on it in production.
 - **Stability AI** (`lib/clients/stability.ts`): three operations, all
   confirmed against a third-party proxy mirroring Stability's own
   parameters plus search-indexed doc snippets, since Stability's docs
@@ -194,9 +209,11 @@ public API contract needs confirming before go-live:
     the foreground (`edit/remove-background`), invert its alpha channel
     into a mask, then `edit/inpaint` with that mask + the buyer's
     instruction -- so only the background changes and the subject stays
-    pixel-identical. Untested live as of this writing.
+    pixel-identical. **Confirmed working live** (S3 end-to-end tested
+    against the deployed app).
   - `removeBackground` (S10's trait library): `edit/remove-background`.
-    Untested live as of this writing.
+    **Confirmed working live** (exercised as part of S10's end-to-end
+    test, which built a trait library and issued tokens successfully).
   - Note: Stability AI "Brand Studio" credits are a separate product from
     the Developer Platform for most account tiers (Brand Studio API
     access is Enterprise-only) -- confirmed in this case that the
