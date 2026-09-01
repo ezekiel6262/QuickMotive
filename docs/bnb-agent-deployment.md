@@ -20,7 +20,11 @@ turn it on.
 | Payment gate | `lib/payments/x402.ts` | x402 wire format, b402 settlement. Verify before doing work, settle after it succeeds. |
 | Chain config | `lib/chains/bnb.ts` | Chain IDs, CAIP-2, relayer, and the settlement token table. |
 | Registration | `scripts/register-agent.ts` | Mints the ERC-8004 identity. Dry-run by default. |
+| Credit ledger | `lib/payments/credits.ts`, migration `0002` | Under-delivery becomes credit on the buyer's next call, since x402 `exact` cannot settle for less than it authorized. |
+| Cost-derived pricing | `lib/pricing/costs.ts` | Provider costs as data; prices computed from them, not hand-set. |
 | Pre-submission check | `scripts/verify-agent.ts` | Everything a marketplace reviewer or indexer will hit. |
+| Pricing check | `scripts/verify-pricing.ts` | Fails if any service is priced below its provider cost. |
+| Chain constants check | `scripts/verify-tokens.ts` | Reads `symbol()`/`decimals()` off each token contract; probes the facilitator's `/supported`. |
 
 ## How a paid call actually flows
 
@@ -85,15 +89,24 @@ Redeploy, then re-run `agent:verify`. The 402 check should now report a
 real `accepts` entry, e.g. `exact on bsc-mainnet, 100000000000000000 of
 0x55d3...7955`.
 
-Sanity-check the atomic amounts by hand before taking real money. BEP-20
-USDT and USDC on BSC are **18-decimal**, unlike their 6-decimal
-Ethereum/Base counterparts, so 0.10 USDT is `100000000000000000`. If you
-see a number with six zeros where you expected eighteen, `decimals` in
-`lib/chains/bnb.ts` is wrong and every price is off by 10^12.
+Then check the chain-side constants and the prices, both of which fail
+loudly rather than needing to be eyeballed:
 
-Also re-verify the three token addresses in that file against BscScan.
-They are the well-known BSC deployments, but this is the one file where a
-copy error sends buyer funds to the wrong contract.
+```bash
+npm run verify:tokens     # symbol()/decimals() on-chain + facilitator /supported
+npm run verify:pricing    # no service priced below its provider cost
+npm test                  # the money arithmetic
+```
+
+`verify:tokens` is the one that matters most here. BEP-20 USDT and USDC on
+BSC are **18-decimal**, unlike their 6-decimal Ethereum/Base counterparts,
+so 0.10 USDT is `100000000000000000` — a `decimals` copied from an
+Ethereum config misprices everything by 10^12, and a mistyped address
+quotes buyers against the wrong contract entirely. The script reads both
+off the chain instead of trusting the table.
+
+Apply migration `0002_payment_credits.sql` before enabling payments — the
+credit ledger is what stops under-delivering calls from over-charging.
 
 ## Step 3 — register the ERC-8004 identity
 
@@ -147,15 +160,6 @@ hypothetical.
   real testnet payment (`B402_NETWORK=bsc-testnet`, with
   `B402_ASSET_ADDRESS` pointed at a faucet token) before mainnet: that is
   the only thing that proves the handshake end to end.
-- **Variable-count pricing is charged up front.** x402 `exact` needs a
-  fixed amount before the work runs, but S8 prices per *passing* asset and
-  S10 per *non-colliding* token — neither is known until afterwards. Both
-  currently charge for the requested count, which overcharges whenever QC
-  flags an asset or dedup rejects a token. Either refund the difference
-  out of band, move those two to x402's deferred scheme, or restate their
-  listing copy as "priced per requested item". Until one of those, the
-  listing copy in `listing/` describes them as priced per requested item,
-  which is what the code does.
 - **The orchestrator is not metered.** It chains services via internal
   calls that bypass the gate, so with payments on it refuses to run unless
   `ORCHESTRATOR_ALLOW_UNPAID=true`. It reports `amount_due` (the sum of
@@ -165,12 +169,78 @@ hypothetical.
 - **`INTERNAL_SERVICE_TOKEN` is a real key.** Anyone holding it calls
   every priced service for free. It is only needed if you run the
   orchestrator at all; leave it unset otherwise.
-- **S2's price still doesn't cover Veo.** Unchanged from the README's
-  existing risk list, and it matters more here: on BNB the price is
-  enforced on-chain rather than invoiced, so a $0.40 call that costs
-  ~$0.75–1.20 in Veo time loses money on every request. Fix the price in
-  `lib/a2mcp/registry.ts` before enabling payments, and the agent card and
-  both listings follow automatically.
 - **`/api/admin/okx-balance` is still unauthenticated.** Pre-existing, but
   a public agent endpoint is a more exposed place for it than an OKX-only
   deployment was.
+
+## How the two pricing problems were solved
+
+Both were in the first version of this doc as things to fix before going
+live. They are fixed; this is how, so the mechanisms aren't mistaken for
+incidental complexity.
+
+### Under-delivery is credited, not pocketed
+
+x402's `exact` scheme settles one fixed amount, signed before the work
+runs. Three services only learn their real quantity afterwards — S8 prices
+per QC-passing asset, S10 per non-colliding token, S2 per second of video
+Veo actually returned — and the gap always ran one way: the buyer paid for
+what they requested and sometimes got less.
+
+Refunding on-chain would need a hot wallet, gas, and transfers routinely
+worth less than the gas to send them. Instead each route calls
+`payment.reconcile(delivered, job_id)` before settling, and the shortfall
+becomes a credit row (`supabase/migrations/0002_payment_credits.sql`)
+applied against that wallet's next call:
+
+```
+request 10 assets  ->  charged 10 x 0.35 = 3.50
+7 pass QC          ->  reconcile(7) credits 1.05
+next call          ->  quoted 3.50, less 1.05 credit, 2.45 payable on-chain
+```
+
+Three ordering details that are load-bearing:
+
+- Credit is **consumed at the gate**, not after the work. Consuming
+  afterwards would let two concurrent calls each be quoted the same
+  balance and both spend it.
+- Consequently `withJob` **releases** reserved credit if the job fails —
+  nothing was settled on-chain, so the credit must come back.
+- A discount is only honoured if the **verified payer is the wallet that
+  earned the credit**. Claiming someone else's wallet in `x-buyer-wallet`
+  re-quotes at full price after `/verify` returns a different signer.
+
+The arithmetic is a pure function, `shortfallCredit`, covered by
+`tests/payments.test.ts` — including the case a naive implementation gets
+wrong, where a job delivers *nothing* and `priceForRequest`'s quantity
+floor of 1 would otherwise keep one unit's worth of the buyer's money.
+
+### Prices are derived from costs, and checked
+
+S2's flat $0.40/call against a Veo clip costing up to $1.20 survived
+because nothing checked. Now:
+
+- `lib/pricing/costs.ts` holds provider unit costs as data, with
+  `PRICE_MARGIN` (default 60%) over worst-case cost.
+- S2 is `per_second` at `VEO_PRICE_PER_SECOND`, so a 4s clip and an 8s clip
+  are priced differently instead of averaging into a loss.
+- **S1's video path was the bigger hole** — `output_type: "video"` runs the
+  same Veo call behind S1's flat $0.05, a ~24x loss. It now bills at S2's
+  per-second rate via `requirePayment`'s `priceAs`, while staying one
+  service with one job type.
+- `npm run verify:pricing` fails the build if any registry entry with a
+  known cost stops covering it. It catches the exact original mistake: a
+  hand-edited literal price below cost exits non-zero.
+
+Run it in CI alongside `typecheck` and `lint`.
+
+### Verifying the chain-side constants
+
+`npm run verify:tokens` reads `symbol()` and `decimals()` off each
+configured token contract and fails on any mismatch, then probes the
+facilitator's `/supported` for our network and scheme. That replaces
+trusting three hardcoded addresses and a decimals field — the field where
+a value copied from an Ethereum config misprices everything by 10^12.
+
+It needs network access, so it is not part of `npm test`; run it before
+enabling payments and after any edit to `lib/chains/bnb.ts`.

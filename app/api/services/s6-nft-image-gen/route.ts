@@ -27,8 +27,15 @@ export async function POST(req: Request) {
   try {
     const body = await parseBody<z.infer<typeof bodySchema>>(req, bodySchema);
     // Verify payment before spending anything downstream; settle only
-    // after the job succeeds.
-    const payment = await requirePayment(req, { serviceType: "s6_nft_image_gen", quantity: body.count });
+    // after the job succeeds. The claimed wallet is passed in so any
+    // credit balance it holds reduces what has to be paid on-chain --
+    // honoured only if that same wallet turns out to have signed.
+    const claimedWallet = req.headers.get("x-buyer-wallet") ?? body.buyer_wallet ?? null;
+    const payment = await requirePayment(req, {
+      serviceType: "s6_nft_image_gen",
+      quantity: body.count,
+      buyerWallet: claimedWallet
+    });
     const buyerWallet = requireBuyerWallet(req, body.buyer_wallet, payment.payer);
     const pricing = getToolDefinition("s6_nft_image_gen")!.pricing;
 
@@ -37,8 +44,7 @@ export async function POST(req: Request) {
         serviceType: "s6_nft_image_gen",
         buyerWallet,
         input: body,
-        pricePaid: payment.amount,
-        priceCurrency: payment.currency
+        payment
       },
       async (jobId) => {
         const supabase = getSupabaseAdmin();
@@ -78,6 +84,8 @@ export async function POST(req: Request) {
       }
     );
 
+    // Charged for the requested count; credit back anything not delivered.
+    await payment.reconcile(output.assets.filter((a) => a.url).length, job_id);
     const receipt = await settleQuietly(payment);
     return withPaymentReceipt(
       NextResponse.json({ job_id, price: pricing, payment: receipt, ...output }),

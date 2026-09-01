@@ -76,6 +76,13 @@ const checks: Check[] = [
   {
     name: "priced route answers 402 with a usable accepts list",
     run: async () => {
+      // Whether a 402 is required here is not guessable from the response
+      // alone -- ask the agent card whether the gate is meant to be on.
+      const card = (await (await fetch(`${base}/.well-known/agent-card.json`)).json()) as {
+        payments?: { enabled?: boolean };
+      };
+      const gateEnabled = card.payments?.enabled === true;
+
       const res = await fetch(`${base}/api/services/s5-brand-kit`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -83,10 +90,14 @@ const checks: Check[] = [
       });
 
       if (res.status !== 402) {
-        // Not a failure on its own: with X402_ENABLED unset the gate is a
-        // no-op by design. Say which case this is rather than passing
-        // silently, since "no 402" is a listing blocker if payments were
-        // meant to be on.
+        const detail = (await res.text()).slice(0, 200);
+        if (gateEnabled) {
+          // Previously this reported "gate is off" for any non-402 and
+          // passed -- which silently green-lit a 500 from the gate itself.
+          throw new Error(
+            `payments are enabled but the route answered HTTP ${res.status}, not 402: ${detail}`
+          );
+        }
         return `no 402 (HTTP ${res.status}) -- payment gate is off; set X402_ENABLED=true to charge`;
       }
 
@@ -97,6 +108,30 @@ const checks: Check[] = [
         if (!accept[field]) throw new Error(`accepts[0] missing ${field}`);
       }
       return `${accept.scheme} on ${accept.network}, ${accept.maxAmountRequired} of ${accept.asset}`;
+    }
+  },
+  {
+    name: "quantity-priced route scales its quote with the request",
+    run: async () => {
+      // Guards the regression that matters most for revenue: a per-unit
+      // service quoting a flat price, or a per-second one quoting per call.
+      const quote = async (seconds: number) => {
+        const res = await fetch(`${base}/api/services/s2-image-to-motion`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ image_url: "https://example.com/probe.png", max_duration_seconds: seconds })
+        });
+        if (res.status !== 402) return null;
+        const body = (await res.json()) as { accepts?: Array<{ maxAmountRequired?: string }> };
+        return body.accepts?.[0]?.maxAmountRequired ?? null;
+      };
+
+      const [short, long] = await Promise.all([quote(4), quote(8)]);
+      if (short === null || long === null) return "skipped -- payment gate is off";
+      if (BigInt(long) <= BigInt(short)) {
+        throw new Error(`8s quoted ${long}, 4s quoted ${short}: video is not billed by duration`);
+      }
+      return `4s -> ${short}, 8s -> ${long} (scales with duration)`;
     }
   }
 ];

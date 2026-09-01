@@ -8,6 +8,7 @@ import {
   toAtomicUnits,
   type BnbNetwork
 } from "@/lib/chains/bnb";
+import { consumeCredits, getCreditBalance, issueCredit, normalizeWallet } from "@/lib/payments/credits";
 
 /**
  * x402 / b402 payment gate for every priced route in this suite.
@@ -77,19 +78,45 @@ export interface SettlementReceipt {
   payer: string | null;
   transaction?: string;
   network?: string;
-  /** Human-readable price actually charged, for the job row. */
+  /** List price for this request, before credit. */
   amount: number;
+  /** Credit balance applied, reducing what had to be paid on-chain. */
+  creditApplied: number;
+  /** What was actually charged on-chain: `amount - creditApplied`. */
+  charged: number;
+  /** Credit issued back for under-delivery, once reconciled. */
+  creditIssued?: number;
   currency: string;
 }
 
 export interface PaymentContext {
   /** Wallet that signed the authorization, once verified. */
   payer: string | null;
-  /** Price charged for this specific request, after quantity scaling. */
+  /** Wallet the credit ledger is keyed on: the verified payer if there is
+   *  one, else the wallet the caller claimed. */
+  wallet: string | null;
+  /** List price for this request, after quantity scaling, before credit. */
   amount: number;
+  /** Credit consumed for this request. */
+  creditApplied: number;
+  /** Amount actually payable on-chain. */
+  charged: number;
   currency: string;
+  /**
+   * Report what was actually delivered, so an over-charge becomes credit on
+   * the buyer's next call. Call it before `settle` on any service whose
+   * delivered quantity can fall short of the requested one. No-op for
+   * `per_call` pricing, where quantity is always 1.
+   */
+  reconcile: (deliveredQuantity: number, jobId?: string) => Promise<number>;
   /** Settles the verified authorization. No-op when the gate is disabled. */
   settle: () => Promise<SettlementReceipt>;
+  /**
+   * Hand back credit reserved for a job that then failed. Called by
+   * `withJob` on the failure path -- reserving at the gate is what stops
+   * two concurrent calls being quoted the same balance.
+   */
+  release: () => Promise<void>;
 }
 
 export function isPaymentEnabled(): boolean {
@@ -143,11 +170,12 @@ function acceptedCurrencies(): string[] {
  * `per_delivered_asset` / `per_token` tiers scale by the count the buyer
  * asked for.
  *
- * Note the mismatch this papers over: S8 prices per *passing* asset and
- * S10 per *non-colliding* token, neither of which is known until the work
- * is done, while x402 "exact" needs a number up front. Charging for the
- * requested count is the honest-to-the-buyer direction only if overcharge
- * is refunded -- see the README's "Known integration gaps".
+ * This quotes the *requested* quantity, because x402 "exact" needs a fixed
+ * number before the work runs while S8 (per QC-passing asset), S10 (per
+ * non-colliding token) and S2 (per second Veo returned) only know their
+ * real quantity afterwards. The over-charge that creates is not left
+ * standing: `reconcile` credits the difference back through
+ * `lib/payments/credits.ts`, applied against the buyer's next call.
  */
 export function priceForRequest(serviceType: ServiceType, quantity = 1): { amount: number; currency: string } {
   const tool = getToolDefinition(serviceType);
@@ -157,14 +185,75 @@ export function priceForRequest(serviceType: ServiceType, quantity = 1): { amoun
   return { amount: Number(scaled.toFixed(6)), currency };
 }
 
+/** True for the units whose delivered quantity can fall short of the requested one. */
+function isQuantityPriced(serviceType: ServiceType): boolean {
+  const unit = getToolDefinition(serviceType)?.pricing.unit;
+  return unit !== undefined && unit !== "per_call";
+}
+
+/**
+ * How much of a charge the buyer is owed back when a call delivers less
+ * than it was billed for.
+ *
+ * Pure, and exported, because this is the arithmetic that decides whether
+ * an under-delivering call over-charges: worth testing directly rather
+ * than only through a live database.
+ */
+/**
+ * Run a credit-ledger operation without letting it take down the request.
+ *
+ * The ledger is an optimisation on top of payment, not payment itself: a
+ * buyer with no reachable ledger should get a normal 402 at list price,
+ * not a 500. Every failure here resolves in the direction that cannot
+ * over-charge -- an unreadable balance means no discount is offered, and a
+ * failed consumption means the credit stays in the buyer's ledger (a cost
+ * to us, bounded by credit they legitimately held, rather than money taken
+ * from them).
+ */
+async function creditSafely<T>(op: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await op();
+  } catch (err) {
+    console.error("[x402] credit ledger unavailable, continuing without it:", err);
+    return fallback;
+  }
+}
+
+export function shortfallCredit(
+  serviceType: ServiceType,
+  chargedQuantity: number,
+  deliveredQuantity: number
+): number {
+  if (!isQuantityPriced(serviceType)) return 0;
+
+  const charged = Math.max(1, chargedQuantity);
+  const delivered = Math.max(0, deliveredQuantity);
+  if (delivered >= charged) return 0;
+
+  const chargedPrice = priceForRequest(serviceType, charged).amount;
+  // `priceForRequest` floors quantity at 1, so a call that delivered
+  // nothing has to be handled explicitly -- otherwise a zero-delivery job
+  // would keep one unit's worth of the buyer's money.
+  const deliveredPrice = delivered === 0 ? 0 : priceForRequest(serviceType, delivered).amount;
+
+  return Number(Math.max(0, chargedPrice - deliveredPrice).toFixed(6));
+}
+
 export function buildPaymentRequirements(params: {
   serviceType: ServiceType;
   resource: string;
   quantity?: number;
+  /**
+   * Charge this instead of the computed list price -- the price net of any
+   * credit balance the buyer is spending on this call.
+   */
+  overrideAmount?: number;
 }): { accepts: PaymentRequirements[]; amount: number; currency: string } {
   const network = resolveNetwork();
   const tool = getToolDefinition(params.serviceType);
-  const { amount, currency } = priceForRequest(params.serviceType, params.quantity);
+  const listPrice = priceForRequest(params.serviceType, params.quantity);
+  const currency = listPrice.currency;
+  const amount = params.overrideAmount ?? listPrice.amount;
   const payTo = payToAddress();
 
   const accepts = acceptedCurrencies().map((symbol) => {
@@ -187,7 +276,9 @@ export function buildPaymentRequirements(params: {
         relayer: getChainConfig(network).relayerContract,
         priceUnit: tool?.pricing.unit,
         quantity: params.quantity ?? 1,
-        humanAmount: `${amount} ${currency}`
+        humanAmount: `${amount} ${currency}`,
+        listAmount: listPrice.amount,
+        creditApplied: Number((listPrice.amount - amount).toFixed(6))
       }
     };
   });
@@ -235,21 +326,65 @@ async function callFacilitator(
  */
 export async function requirePayment(
   req: Request,
-  params: { serviceType: ServiceType; quantity?: number }
+  params: {
+    serviceType: ServiceType;
+    quantity?: number;
+    /**
+     * Price this call off a different registry entry. S1's video path uses
+     * it to bill at S2's per-second Veo rate: same route, same job type,
+     * but a request that costs ~24x the flat S1 price must not be sold at
+     * the flat S1 price.
+     */
+    priceAs?: ServiceType;
+    /**
+     * Wallet the caller claims, from the `x-buyer-wallet` header or the
+     * body. Needed before payment to look up a credit balance. Any credit
+     * applied is only honoured if the verified payer turns out to be this
+     * same wallet.
+     */
+    buyerWallet?: string | null;
+  }
 ): Promise<PaymentContext> {
-  const { amount, currency } = priceForRequest(params.serviceType, params.quantity);
+  const pricedAs = params.priceAs ?? params.serviceType;
+  const quantity = params.quantity ?? 1;
+  const { amount, currency } = priceForRequest(pricedAs, quantity);
 
   if (!isPaymentEnabled() || isInternalCall(req)) {
     return {
       payer: null,
+      wallet: params.buyerWallet ?? null,
       amount,
+      creditApplied: 0,
+      charged: amount,
       currency,
-      settle: async () => ({ settled: false, payer: null, amount, currency })
+      reconcile: async () => 0,
+      release: async () => {},
+      settle: async () => ({
+        settled: false,
+        payer: null,
+        amount,
+        creditApplied: 0,
+        charged: amount,
+        currency
+      })
     };
   }
 
+  // Credit from a previous under-delivery reduces what has to be paid
+  // on-chain. Read against the claimed wallet, honoured only if that
+  // wallet turns out to be the one that signed (checked after /verify).
+  const claimedWallet = params.buyerWallet ? normalizeWallet(params.buyerWallet) : null;
+  const balance = claimedWallet ? await creditSafely(() => getCreditBalance(claimedWallet, currency), 0) : 0;
+  const creditQuote = Math.min(amount, balance);
+  const due = Number((amount - creditQuote).toFixed(6));
+
   const resource = new URL(req.url).toString();
-  const { accepts } = buildPaymentRequirements({ ...params, resource });
+  const { accepts } = buildPaymentRequirements({
+    serviceType: pricedAs,
+    quantity,
+    resource,
+    overrideAmount: due
+  });
   const firstAccept = accepts[0];
   if (!firstAccept) {
     throw new Error(
@@ -257,11 +392,38 @@ export async function requirePayment(
     );
   }
 
+  // Credit covers the whole call: nothing to sign, nothing to settle.
+  // Consumed now rather than after the work, so two concurrent calls can't
+  // both be quoted the same balance.
+  if (due <= 0 && claimedWallet) {
+    const consumed = await creditSafely(() => consumeCredits({ wallet: claimedWallet, currency, amount }), 0);
+    if (consumed >= amount) {
+      return buildCreditOnlyContext({ wallet: claimedWallet, amount, consumed, currency, pricedAs, quantity });
+    }
+    // Lost a race for part of the balance -- fall through and charge the
+    // remainder rather than serving the call under-paid.
+    if (consumed > 0) {
+      await creditSafely(
+        () =>
+          issueCredit({
+            wallet: claimedWallet,
+            currency,
+            amount: consumed,
+            reason: "released: credit-only quote lost a concurrent race"
+          }),
+        undefined
+      );
+    }
+  }
+
   const header = req.headers.get("x-payment");
   if (!header) {
     throw new PaymentRequiredError({
       x402Version: X402_VERSION,
-      error: `Payment required: ${amount} ${currency}`,
+      error:
+        creditQuote > 0
+          ? `Payment required: ${due} ${currency} (${amount} less ${creditQuote} credit)`
+          : `Payment required: ${amount} ${currency}`,
       accepts
     });
   }
@@ -314,10 +476,74 @@ export async function requirePayment(
 
   const payer = typeof verified.payer === "string" ? verified.payer : null;
 
+  // A credit belongs to the wallet that earned it. If the signer is not the
+  // wallet the request claimed, the discount was not theirs to spend --
+  // re-quote at full price rather than serving it.
+  if (creditQuote > 0 && (!payer || normalizeWallet(payer) !== claimedWallet)) {
+    const { accepts: fullPrice } = buildPaymentRequirements({
+      serviceType: pricedAs,
+      quantity,
+      resource,
+      overrideAmount: amount
+    });
+    throw new PaymentRequiredError({
+      x402Version: X402_VERSION,
+      error: `Credit belongs to ${claimedWallet}, but the payment was signed by ${payer ?? "an unknown wallet"}. Re-quoted at full price.`,
+      accepts: fullPrice
+    });
+  }
+
+  const creditApplied =
+    creditQuote > 0
+      ? await creditSafely(() => consumeCredits({ wallet: claimedWallet!, currency, amount: creditQuote }), 0)
+      : 0;
+  const wallet = payer ? normalizeWallet(payer) : claimedWallet;
+  let creditIssued = 0;
+
   return {
     payer,
+    wallet,
     amount,
+    creditApplied,
+    charged: Number((amount - creditApplied).toFixed(6)),
     currency,
+
+    reconcile: async (deliveredQuantity: number, jobId?: string) => {
+      if (!wallet) return 0;
+
+      // Charged for `quantity`, delivered less. The difference is the
+      // buyer's, and becomes credit against their next call.
+      const delivered = Math.max(0, deliveredQuantity);
+      const shortfall = shortfallCredit(pricedAs, quantity, delivered);
+      if (shortfall <= 0) return 0;
+
+      const ok = await creditSafely(
+        () =>
+          issueCredit({
+            wallet,
+            currency,
+            amount: shortfall,
+            reason: `under-delivery on ${params.serviceType}: charged for ${quantity}, delivered ${delivered}`,
+            jobId
+          }).then(() => true),
+        false
+      );
+      if (!ok) return 0;
+      creditIssued = shortfall;
+      return shortfall;
+    },
+
+    release: async () => {
+      if (creditApplied > 0 && wallet) {
+        await issueCredit({
+          wallet,
+          currency,
+          amount: creditApplied,
+          reason: "released: job failed after credit was reserved"
+        });
+      }
+    },
+
     settle: async () => {
       const settled = await callFacilitator("/settle", verifyBody);
       if (settled.success !== true) {
@@ -329,9 +555,70 @@ export async function requirePayment(
         transaction: typeof settled.transaction === "string" ? settled.transaction : undefined,
         network: typeof settled.network === "string" ? settled.network : requirement.network,
         amount,
+        creditApplied,
+        charged: Number((amount - creditApplied).toFixed(6)),
+        creditIssued: creditIssued > 0 ? creditIssued : undefined,
         currency
       };
     }
+  };
+}
+
+/** Call fully covered by credit: no signature, no on-chain settlement. */
+function buildCreditOnlyContext(params: {
+  wallet: string;
+  amount: number;
+  consumed: number;
+  currency: string;
+  pricedAs: ServiceType;
+  quantity: number;
+}): PaymentContext {
+  const { wallet, amount, consumed, currency, pricedAs, quantity } = params;
+  let creditIssued = 0;
+
+  return {
+    payer: null,
+    wallet,
+    amount,
+    creditApplied: consumed,
+    charged: 0,
+    currency,
+    reconcile: async (deliveredQuantity: number, jobId?: string) => {
+      const delivered = Math.max(0, deliveredQuantity);
+      const shortfall = shortfallCredit(pricedAs, quantity, delivered);
+      if (shortfall <= 0) return 0;
+      const ok = await creditSafely(
+        () =>
+          issueCredit({
+            wallet,
+            currency,
+            amount: shortfall,
+            reason: `under-delivery on ${pricedAs}: charged for ${quantity}, delivered ${delivered}`,
+            jobId
+          }).then(() => true),
+        false
+      );
+      if (!ok) return 0;
+      creditIssued = shortfall;
+      return shortfall;
+    },
+    release: async () => {
+      await issueCredit({
+        wallet,
+        currency,
+        amount: consumed,
+        reason: "released: job failed after credit was reserved"
+      });
+    },
+    settle: async () => ({
+      settled: false,
+      payer: null,
+      amount,
+      creditApplied: consumed,
+      charged: 0,
+      creditIssued: creditIssued > 0 ? creditIssued : undefined,
+      currency
+    })
   };
 }
 
@@ -356,7 +643,14 @@ export async function settleQuietly(payment: PaymentContext): Promise<Settlement
     return await payment.settle();
   } catch (err) {
     console.error("[x402] settlement failed after successful job:", err);
-    return { settled: false, payer: payment.payer, amount: payment.amount, currency: payment.currency };
+    return {
+      settled: false,
+      payer: payment.payer,
+      amount: payment.amount,
+      creditApplied: payment.creditApplied,
+      charged: payment.charged,
+      currency: payment.currency
+    };
   }
 }
 

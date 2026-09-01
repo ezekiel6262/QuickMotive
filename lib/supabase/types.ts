@@ -110,10 +110,42 @@ export interface ExportBundleRow {
   created_at: string;
 }
 
+/** Mirrors supabase/migrations/0002_payment_credits.sql. */
+export interface PaymentCreditRow {
+  id: string;
+  /** Always stored lower-cased -- see `normalizeWallet` in lib/payments/credits.ts. */
+  buyer_wallet: string;
+  currency: string;
+  amount: number;
+  remaining: number;
+  reason: string;
+  job_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PaymentCreditRedemptionRow {
+  id: string;
+  credit_id: string;
+  job_id: string | null;
+  amount: number;
+  created_at: string;
+}
+
 export interface Database {
   public: {
     Tables: {
       jobs: { Row: JobRow; Insert: Partial<JobRow>; Update: Partial<JobRow> };
+      payment_credits: {
+        Row: PaymentCreditRow;
+        Insert: Partial<PaymentCreditRow>;
+        Update: Partial<PaymentCreditRow>;
+      };
+      payment_credit_redemptions: {
+        Row: PaymentCreditRedemptionRow;
+        Insert: Partial<PaymentCreditRedemptionRow>;
+        Update: Partial<PaymentCreditRedemptionRow>;
+      };
       media_assets: {
         Row: MediaAssetRow;
         Insert: Partial<MediaAssetRow>;

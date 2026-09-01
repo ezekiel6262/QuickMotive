@@ -54,7 +54,8 @@ callable and priced on its own, from $0.05 to $3.00 a call.
 
 No orchestration to adopt and no bundle to buy: an agent that needs one
 capability buys one capability. Payment is x402 over b402, so a calling
-agent pays in stablecoins with no gas and no account.
+agent pays in stablecoins with no gas and no account — and anything a call
+doesn't deliver is credited back to the paying wallet automatically.
 
 ## Skills
 
@@ -76,8 +77,11 @@ listing wants it inline.
 ## Verifying the listing before you submit
 
 ```bash
-npm run agent:verify -- https://<origin>
+npm run agent:verify -- https://<origin>   # card, MCP, and a real 402
+npm run verify:pricing                      # nothing sold below cost
+npm run verify:tokens                       # token table matches the chain
+npm test                                    # the money arithmetic
 ```
 
-All five checks should pass, with the 402 check reporting a real `accepts`
-entry rather than "payment gate is off".
+`agent:verify`'s five checks should all pass, with the 402 check reporting
+a real `accepts` entry rather than "payment gate is off".

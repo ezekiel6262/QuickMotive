@@ -5,9 +5,9 @@ Copy for the BNB Agent Studio submission at
 
 **Before pasting:** finish `docs/bnb-agent-deployment.md` steps 1–3. A
 listing that points at an agent card with no `registrations` and no
-`payTo` reads as an unfinished submission. And settle S2's price first —
-at $0.40 a call it is below Veo cost (README, "Open risks"), and on this
-path the price is collected on-chain, not invoiced.
+`payTo` reads as an unfinished submission. Run `npm run verify:pricing`
+and `npm run verify:tokens` too — the prices below are generated from the
+registry, and a failing check means they are wrong.
 
 The exact field names on the submission form could not be checked from
 this environment (bnbchain.org is blocked by the network egress policy
@@ -77,33 +77,40 @@ Per call, over b402. The agent hits an endpoint, gets a 402 with the price
 in USDT or USDC, signs an EIP-712 authorization, and retries; settlement
 goes through the b402 relayer, so the buyer spends no gas. Prices range
 from $0.05 to $3.00 depending on the skill. Nothing is charged until the
-payment verifies, and settlement only runs after the work succeeds.
+payment verifies, and settlement only runs after the work succeeds — a
+failed job takes no money at all.
+
+Where a call delivers less than it was billed for, the difference is
+credited back to the paying wallet and applied to its next call
+automatically.
 
 ## Skill catalog
 
 | Skill | What it does | Price |
 |---|---|---|
-| `s1_prompt_bridge` | Media → structured reusable prompt, or text → image/video | 0.05 / call |
-| `s2_image_to_motion` | Animate a still image, optional motion direction | 0.40 / call |
+| `s1_prompt_bridge` | Media → structured reusable prompt, or text → image | 0.05 / call |
+| `s1_prompt_bridge` (video) | Text → video, same endpoint | 0.24 / second |
+| `s2_image_to_motion` | Animate a still image, optional motion direction | 0.24 / second (4, 6 or 8s) |
 | `s3_design_tweak` | Plain-language edit applied to a Canva design or raster asset | 0.15 / call |
 | `s4_nft_scanner_report` | On-chain collection scan → rarity + PDF report | 2.00 / call |
 | `s5_brand_kit` | Define a reusable brand-lock kit | 0.10 / call |
-| `s6_nft_image_gen` | Generate a styled image set from a description | 0.30 / requested asset |
-| `s7_nft_variation` | img2img variations with per-image similarity scoring | 0.30 / requested asset |
-| `s8_batch_generation` | Brand-constrained batch with QC gating | 0.35 / requested asset |
+| `s6_nft_image_gen` | Generate a styled image set from a description | 0.30 / delivered asset |
+| `s7_nft_variation` | img2img variations with per-image similarity scoring | 0.30 / delivered asset |
+| `s8_batch_generation` | Brand-constrained batch with QC gating | 0.35 / QC-passing asset |
 | `s9_export_bundle` | Marketplace/social/print/web export + metadata | 0.20 / call |
-| `s10_trait_engine` | Trait taxonomy → layered library → deduped collection | 0.50 / requested token |
+| `s10_trait_engine` | Trait taxonomy → layered library → deduped collection | 0.50 / issued token |
 | `s11_game_template` | Playable HTML5 game skinned with a character | 3.00 / call |
 
 All amounts in USDT (or USDC at the same nominal price). Live schemas and
 prices: `GET https://<origin>/api/mcp` or the agent card.
 
-Note the wording: the per-asset tiers are priced per *requested* item.
-S8 flags some assets in QC and S10 rejects colliding tokens, and x402
-`exact` fixes the amount before the work runs — so the request count is
-what is charged. Do not restate these as "per delivered asset" on the
-listing without first implementing the refund path (see
-`docs/bnb-agent-deployment.md`, "Known gaps").
+**On "delivered".** x402's `exact` scheme fixes the amount before the work
+runs, so the request is authorized for the count asked for. Whatever isn't
+delivered — an asset that fails QC, a token rejected as a duplicate, a
+video Veo returns shorter than requested — is credited back to the paying
+wallet and applied automatically to its next call. The buyer pays for what
+they receive; the credit balance is the mechanism, and it is visible in
+every response's `payment` object.
 
 ## Trust and limits
 
