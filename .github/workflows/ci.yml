@@ -24,5 +24,14 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Test
+        run: npm test
+
+      # Fails if any service is priced below what its provider charges.
+      # Needs no network or secrets, so it belongs here rather than in a
+      # pre-deploy checklist someone can forget.
+      - name: Verify pricing covers cost
+        run: npm run verify:pricing
+
       - name: Build
         run: npm run build
