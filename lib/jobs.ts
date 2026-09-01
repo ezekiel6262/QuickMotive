@@ -53,7 +53,19 @@ export async function failJob(jobId: string, err: unknown): Promise<void> {
 
 /** Wraps a service handler so every route gets consistent job bookkeeping. */
 export async function withJob<T extends Record<string, unknown>>(
-  params: { serviceType: ServiceType; buyerWallet: string; input: Record<string, unknown> },
+  params: {
+    serviceType: ServiceType;
+    buyerWallet: string;
+    input: Record<string, unknown>;
+    /**
+     * Price quoted for this specific call (post quantity-scaling). Recorded
+     * up front so the row anchors settlement even if the x402 settle step
+     * later fails -- an unsettled job is then a queryable state, not a
+     * silent zero.
+     */
+    pricePaid?: number;
+    priceCurrency?: string;
+  },
   handler: (jobId: string) => Promise<T>
 ): Promise<{ job_id: string; output: T }> {
   const job = await createJob(params);

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { parseBody, requireBuyerWallet, handleRouteError } from "@/lib/api-helpers";
+import { requirePayment, settleQuietly, withPaymentReceipt } from "@/lib/payments/x402";
 import { withJob } from "@/lib/jobs";
 import { extractStructuredPrompt } from "@/lib/clients/anthropic";
 import * as veo from "@/lib/clients/veo";
@@ -29,11 +30,20 @@ const bodySchema = z
 export async function POST(req: Request) {
   try {
     const body = await parseBody<z.infer<typeof bodySchema>>(req, bodySchema);
-    const buyerWallet = requireBuyerWallet(req, body.buyer_wallet);
+    // Verify payment before spending anything downstream; settle only
+    // after the job succeeds.
+    const payment = await requirePayment(req, { serviceType: "s1_prompt_bridge", quantity: 1 });
+    const buyerWallet = requireBuyerWallet(req, body.buyer_wallet, payment.payer);
     const pricing = getToolDefinition("s1_prompt_bridge")!.pricing;
 
     const { job_id, output } = await withJob(
-      { serviceType: "s1_prompt_bridge", buyerWallet, input: body },
+      {
+        serviceType: "s1_prompt_bridge",
+        buyerWallet,
+        input: body,
+        pricePaid: payment.amount,
+        priceCurrency: payment.currency
+      },
       async (jobId) => {
         const supabase = getSupabaseAdmin();
 
@@ -73,7 +83,11 @@ export async function POST(req: Request) {
       }
     );
 
-    return NextResponse.json({ job_id, price: pricing, ...output });
+    const receipt = await settleQuietly(payment);
+    return withPaymentReceipt(
+      NextResponse.json({ job_id, price: pricing, payment: receipt, ...output }),
+      receipt
+    );
   } catch (err) {
     return handleRouteError(err);
   }

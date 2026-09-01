@@ -1,12 +1,23 @@
-# QuickMotive -- OKX.ai Creative & NFT Agent Suite
+# QuickMotive -- Creative & NFT Agent Suite
 
 An Agent Service Provider (ASP) exposing a portfolio of narrow, individually
-callable creative and NFT-analysis skills via A2MCP (pay-per-call), so each
-service earns independently instead of shipping as one monolithic agent.
+callable creative and NFT-analysis skills (pay-per-call), so each service
+earns independently instead of shipping as one monolithic agent.
 
-Positioning: the creative + NFT-intelligence desk on OKX.ai -- complements
-pure trading/data agents (CoinAnk, CertiK, etc.) by covering the media and
+Positioning: the creative + NFT-intelligence desk -- complements pure
+trading/data agents (CoinAnk, CertiK, etc.) by covering the media and
 visual-analysis gap.
+
+The same eleven services are sold through two marketplaces, over two
+transports, from one implementation:
+
+- **OKX.ai** via A2MCP, settled by OKX Agentic Wallet / OnchainOS.
+- **BNB Chain** (BNB Agent Studio, Yellow Crab) via MCP + an ERC-8004
+  on-chain identity, settled per call in USDT/USDC over x402/b402. See
+  [`docs/bnb-agent-deployment.md`](docs/bnb-agent-deployment.md).
+
+The BNB payment gate is off unless `X402_ENABLED=true`, so the OKX
+deployment behaves exactly as it did before that path existed.
 
 ## Architecture
 
@@ -103,6 +114,29 @@ Apply the migration to a Supabase project (`supabase db push` or paste
 `supabase/migrations/0001_init.sql` into the SQL editor) before exercising
 any route that touches the database.
 
+## BNB Chain deployment
+
+Full runbook: [`docs/bnb-agent-deployment.md`](docs/bnb-agent-deployment.md).
+Listing copy: [`listing/bnb-agent-studio.md`](listing/bnb-agent-studio.md),
+[`listing/yellowcrab.md`](listing/yellowcrab.md).
+
+```
+  /.well-known/agent-card.json   A2A AgentCard + ERC-8004 registration file,
+                                 built from lib/a2mcp/registry.ts
+  /api/mcp                       MCP JSON-RPC: initialize, tools/list,
+                                 tools/call -> proxies to the same service
+                                 routes a direct HTTP buyer hits
+  lib/payments/x402.ts           402 -> verify -> work -> settle, per call
+  scripts/register-agent.ts      ERC-8004 identity mint (dry-run default)
+  scripts/verify-agent.ts        pre-submission smoke test
+```
+
+```bash
+npm run agent:verify -- https://<origin>   # what a reviewer/indexer will hit
+npm run agent:register                     # preflight + simulate, sends nothing
+npm run agent:register -- --confirm        # broadcast the registration
+```
+
 ## OKX.ai integration checklist
 
 - [ ] Set up OKX Agentic Wallet for the ASP identity (email required)
@@ -139,6 +173,15 @@ These are places where the build brief assumed an interactive-agent MCP
 tool shape that doesn't match what a headless backend can call, or where a
 public API contract needs confirming before go-live:
 
+- **BNB / x402 path**: the payment wire format follows the x402 v1 spec
+  that b402 implements, but has not been exercised against a live
+  facilitator -- run one testnet payment before mainnet. The
+  variable-count tiers (S8, S10) charge for the *requested* count because
+  x402 `exact` fixes the amount before the work runs, which overcharges
+  when QC flags or dedup rejects. The orchestrator is unmetered and
+  refuses to run while payments are on. All three, plus the token-decimal
+  trap, are written up in
+  [`docs/bnb-agent-deployment.md`](docs/bnb-agent-deployment.md).
 - **Higgsfield -- fully removed**: `lib/clients/higgsfield.ts` was
   originally guessed (Bearer auth, `POST /v1/generate_image`, synchronous
   response) and confirmed wrong against a live deployment (404, since the

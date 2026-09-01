@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { parseBody, requireBuyerWallet, handleRouteError, ApiError } from "@/lib/api-helpers";
+import { requirePayment, settleQuietly, withPaymentReceipt } from "@/lib/payments/x402";
 import { withJob } from "@/lib/jobs";
 import * as canva from "@/lib/clients/canva";
 import * as stability from "@/lib/clients/stability";
@@ -31,11 +32,20 @@ const bodySchema = z
 export async function POST(req: Request) {
   try {
     const body = await parseBody<z.infer<typeof bodySchema>>(req, bodySchema);
-    const buyerWallet = requireBuyerWallet(req, body.buyer_wallet);
+    // Verify payment before spending anything downstream; settle only
+    // after the job succeeds.
+    const payment = await requirePayment(req, { serviceType: "s3_design_tweak", quantity: 1 });
+    const buyerWallet = requireBuyerWallet(req, body.buyer_wallet, payment.payer);
     const pricing = getToolDefinition("s3_design_tweak")!.pricing;
 
     const { job_id, output } = await withJob(
-      { serviceType: "s3_design_tweak", buyerWallet, input: body },
+      {
+        serviceType: "s3_design_tweak",
+        buyerWallet,
+        input: body,
+        pricePaid: payment.amount,
+        priceCurrency: payment.currency
+      },
       async (jobId) => {
         const supabase = getSupabaseAdmin();
 
@@ -100,7 +110,11 @@ export async function POST(req: Request) {
       }
     );
 
-    return NextResponse.json({ job_id, price: pricing, ...output });
+    const receipt = await settleQuietly(payment);
+    return withPaymentReceipt(
+      NextResponse.json({ job_id, price: pricing, payment: receipt, ...output }),
+      receipt
+    );
   } catch (err) {
     return handleRouteError(err);
   }
