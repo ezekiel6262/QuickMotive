@@ -3,8 +3,9 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "QuickMotive - OKX.ai Creative & NFT Agent Suite",
-  description: "An Agent Service Provider exposing creative and NFT-analysis skills via A2MCP."
+  title: "QuickMotive - Creative & NFT Agent on BNB Chain",
+  description:
+    "Eleven individually priced creative and NFT skills, callable by any agent over MCP and paid per call in USDT on BNB Smart Chain."
 };
 
 export const viewport: Viewport = {
