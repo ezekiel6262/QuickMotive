@@ -169,9 +169,16 @@ hypothetical.
 - **`INTERNAL_SERVICE_TOKEN` is a real key.** Anyone holding it calls
   every priced service for free. It is only needed if you run the
   orchestrator at all; leave it unset otherwise.
-- **`/api/admin/okx-balance` is still unauthenticated.** Pre-existing, but
-  a public agent endpoint is a more exposed place for it than an OKX-only
-  deployment was.
+- **Deployment protection must come off, and that has a consequence.**
+  The Vercel project runs SSO protection on `all_except_custom_domains`,
+  so every `*.vercel.app` URL 302s to a login — which makes the agent
+  card, the MCP endpoint and the landing page unreachable to buyer agents
+  and ERC-8004 indexers. Either attach a custom domain (protection already
+  exempts those, and a custom domain is the right base for a permanent
+  on-chain record anyway) or disable SSO for production. Whichever you
+  pick, note that `/api/admin/okx-balance` returns real account balances
+  and had been relying on that protection; it now requires
+  `ADMIN_API_TOKEN` and 404s when the token is unset.
 
 ## How the two pricing problems were solved
 
