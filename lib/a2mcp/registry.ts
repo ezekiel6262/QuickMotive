@@ -7,15 +7,17 @@ import { PROVIDER_UNIT_COSTS, VEO_PRICE_PER_SECOND } from "@/lib/pricing/costs";
  * registered, priced, and tested independently -- see build brief section 5
  * (OKX.ai integration checklist).
  *
- * Prices are placeholders (`amount`) pending confirmation of Higgsfield's
- * per-call credit cost -- see README "Open risks".
+ * Prices where a provider cost is known are derived from it in
+ * `lib/pricing/costs.ts` and asserted by `npm run verify:pricing`. The
+ * rest (Gemini- and Stability-backed services) are still placeholders --
+ * see README "Open risks".
  */
 export const A2MCP_TOOL_REGISTRY: A2mcpToolDefinition[] = [
   {
     id: "s1_prompt_bridge",
     name: "Image/Video <-> Text Prompt Bridge",
     summary:
-      "Given media, return a structured re-usable prompt. Given text, generate an image or video via Higgsfield.",
+      "Given media, return a structured re-usable prompt. Given text, generate an image (Gemini) or video (Veo).",
     route: "/api/services/s1-prompt-bridge",
     /**
      * Flat, but only for the prompt-extraction and image paths.
