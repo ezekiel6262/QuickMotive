@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { parseBody, requireBuyerWallet, handleRouteError, ApiError } from "@/lib/api-helpers";
+import { requirePayment, settleQuietly, withPaymentReceipt } from "@/lib/payments/x402";
 import { withJob } from "@/lib/jobs";
 import { buildTraitLibrary, generateNonRepeatingToken } from "@/lib/trait-engine";
 import { proposeTraitTaxonomy } from "@/lib/clients/anthropic";
@@ -34,11 +35,26 @@ const bodySchema = z
 export async function POST(req: Request) {
   try {
     const body = await parseBody<z.infer<typeof bodySchema>>(req, bodySchema);
-    const buyerWallet = requireBuyerWallet(req, body.buyer_wallet);
+    // Verify payment before spending anything downstream; settle only
+    // after the job succeeds. The claimed wallet is passed in so any
+    // credit balance it holds reduces what has to be paid on-chain --
+    // honoured only if that same wallet turns out to have signed.
+    const claimedWallet = req.headers.get("x-buyer-wallet") ?? body.buyer_wallet ?? null;
+    const payment = await requirePayment(req, {
+      serviceType: "s10_trait_engine",
+      quantity: body.collection_size,
+      buyerWallet: claimedWallet
+    });
+    const buyerWallet = requireBuyerWallet(req, body.buyer_wallet, payment.payer);
     const pricing = getToolDefinition("s10_trait_engine")!.pricing;
 
     const { job_id, output } = await withJob(
-      { serviceType: "s10_trait_engine", buyerWallet, input: body },
+      {
+        serviceType: "s10_trait_engine",
+        buyerWallet,
+        input: body,
+        payment
+      },
       async (jobId) => {
         const supabase = getSupabaseAdmin();
         const kit = body.brand_kit_id ? await getBrandKit(body.brand_kit_id) : null;
@@ -118,7 +134,13 @@ export async function POST(req: Request) {
       }
     );
 
-    return NextResponse.json({ job_id, price: pricing, ...output });
+    // Charged for the requested count; credit back anything not delivered.
+    await payment.reconcile(output.tokens_issued, job_id);
+    const receipt = await settleQuietly(payment);
+    return withPaymentReceipt(
+      NextResponse.json({ job_id, price: pricing, payment: receipt, ...output }),
+      receipt
+    );
   } catch (err) {
     return handleRouteError(err);
   }

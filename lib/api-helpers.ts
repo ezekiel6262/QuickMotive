@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import type { ZodType, ZodTypeDef } from "zod";
+import { PaymentRequiredError, paymentRequiredResponse } from "@/lib/payments/x402";
 
 export class ApiError extends Error {
   status: number;
@@ -32,6 +33,12 @@ export async function parseBody<T>(req: Request, schema: ZodType<T, ZodTypeDef, 
 }
 
 export function handleRouteError(err: unknown): NextResponse {
+  // x402/b402: a missing or rejected payment is a 402 carrying the
+  // `accepts` list, not an error page -- the buyer's client reads it,
+  // signs an authorization, and retries.
+  if (err instanceof PaymentRequiredError) {
+    return paymentRequiredResponse(err);
+  }
   if (err instanceof ApiError) {
     return NextResponse.json({ error: err.message }, { status: err.status });
   }
@@ -41,13 +48,23 @@ export function handleRouteError(err: unknown): NextResponse {
 }
 
 /**
- * Every A2MCP call is expected to carry the buyer's wallet address so the
- * job row can be attributed for settlement. OKX's A2MCP envelope should
- * inject this header; fall back to a body field for local testing.
+ * Every call is expected to carry the buyer's wallet address so the job row
+ * can be attributed for settlement. Three sources, in order of trust:
+ *
+ *  1. `payerWallet` -- the address the b402 facilitator cryptographically
+ *     verified signed the payment authorization. On the BNB Agent Studio
+ *     path this is the only self-proving one, so it wins.
+ *  2. `x-buyer-wallet` -- injected by OKX's A2MCP envelope.
+ *  3. `buyer_wallet` in the body -- local testing.
  */
-export function requireBuyerWallet(req: Request, bodyWallet?: string): string {
+export function requireBuyerWallet(req: Request, bodyWallet?: string, payerWallet?: string | null): string {
   const header = req.headers.get("x-buyer-wallet");
-  const wallet = header ?? bodyWallet;
-  if (!wallet) throw new ApiError(400, "Missing buyer wallet (x-buyer-wallet header or buyer_wallet field)");
+  const wallet = payerWallet ?? header ?? bodyWallet;
+  if (!wallet) {
+    throw new ApiError(
+      400,
+      "Missing buyer wallet (verified x402 payer, x-buyer-wallet header, or buyer_wallet field)"
+    );
+  }
   return wallet;
 }

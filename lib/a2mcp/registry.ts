@@ -1,4 +1,5 @@
 import type { A2mcpToolDefinition } from "./types";
+import { PROVIDER_UNIT_COSTS, VEO_PRICE_PER_SECOND } from "@/lib/pricing/costs";
 
 /**
  * Central A2MCP tool catalog for the OKX.ai Creative & NFT Agent Suite ASP.
@@ -6,8 +7,10 @@ import type { A2mcpToolDefinition } from "./types";
  * registered, priced, and tested independently -- see build brief section 5
  * (OKX.ai integration checklist).
  *
- * Prices are placeholders (`amount`) pending confirmation of Higgsfield's
- * per-call credit cost -- see README "Open risks".
+ * Prices where a provider cost is known are derived from it in
+ * `lib/pricing/costs.ts` and asserted by `npm run verify:pricing`. The
+ * rest (Gemini- and Stability-backed services) are still placeholders --
+ * see README "Open risks".
  */
 export const A2MCP_TOOL_REGISTRY: A2mcpToolDefinition[] = [
   {
@@ -16,7 +19,19 @@ export const A2MCP_TOOL_REGISTRY: A2mcpToolDefinition[] = [
     summary:
       "Given media, return a structured re-usable prompt. Given text, generate an image (Gemini) or video (Veo).",
     route: "/api/services/s1-prompt-bridge",
-    pricing: { unit: "per_call", amount: 0.05, currency: "USDT" },
+    /**
+     * Flat, but only for the prompt-extraction and image paths.
+     * `output_type: "video"` routes to Veo, whose cost is ~24x this price,
+     * so that path is billed at S2's per-second rate instead (see the
+     * route). Left as the headline price because it is what the common
+     * case costs.
+     */
+    pricing: {
+      unit: "per_call",
+      amount: 0.05,
+      currency: "USDT",
+      notes: `output_type "video" is billed at the video rate of ${VEO_PRICE_PER_SECOND}/second instead`
+    },
     latencyExpectation: "sub-second to a few seconds",
     inputSchema: {
       type: "object",
@@ -54,7 +69,19 @@ export const A2MCP_TOOL_REGISTRY: A2mcpToolDefinition[] = [
     name: "Video Motion From a Single Image",
     summary: "Animate a still image with optional motion description via Google Veo (Gemini API).",
     route: "/api/services/s2-image-to-motion",
-    pricing: { unit: "per_call", amount: 0.4, currency: "USDT", notes: "capped duration/resolution to keep pricing predictable" },
+    /**
+     * Per-second, derived from Veo's per-second cost. The previous flat
+     * $0.40/call was below cost at every allowed duration (4s costs ~$0.60,
+     * 8s ~$1.20), so it lost money on every request -- fatal once the price
+     * is collected on-chain rather than invoiced.
+     */
+    pricing: {
+      unit: "per_second",
+      amount: VEO_PRICE_PER_SECOND,
+      currency: "USDT",
+      notes: "billed per second of delivered video (4, 6 or 8s); a shorter clip than requested is credited back"
+    },
+    costBasis: { unitCost: PROVIDER_UNIT_COSTS.veo_fast_per_second, provider: "veo-3.1-fast" },
     latencyExpectation: "tens of seconds to ~2 minutes",
     inputSchema: {
       type: "object",

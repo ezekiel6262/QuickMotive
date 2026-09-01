@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { parseBody, requireBuyerWallet, handleRouteError } from "@/lib/api-helpers";
+import { requirePayment, settleQuietly, withPaymentReceipt } from "@/lib/payments/x402";
 import { withJob } from "@/lib/jobs";
 import * as gemini from "@/lib/clients/gemini";
 import { getBrandKit, applyBrandConstraintsToPrompt } from "@/lib/brand-kit";
@@ -25,11 +26,26 @@ const bodySchema = z.object({
 export async function POST(req: Request) {
   try {
     const body = await parseBody<z.infer<typeof bodySchema>>(req, bodySchema);
-    const buyerWallet = requireBuyerWallet(req, body.buyer_wallet);
+    // Verify payment before spending anything downstream; settle only
+    // after the job succeeds. The claimed wallet is passed in so any
+    // credit balance it holds reduces what has to be paid on-chain --
+    // honoured only if that same wallet turns out to have signed.
+    const claimedWallet = req.headers.get("x-buyer-wallet") ?? body.buyer_wallet ?? null;
+    const payment = await requirePayment(req, {
+      serviceType: "s6_nft_image_gen",
+      quantity: body.count,
+      buyerWallet: claimedWallet
+    });
+    const buyerWallet = requireBuyerWallet(req, body.buyer_wallet, payment.payer);
     const pricing = getToolDefinition("s6_nft_image_gen")!.pricing;
 
     const { job_id, output } = await withJob(
-      { serviceType: "s6_nft_image_gen", buyerWallet, input: body },
+      {
+        serviceType: "s6_nft_image_gen",
+        buyerWallet,
+        input: body,
+        payment
+      },
       async (jobId) => {
         const supabase = getSupabaseAdmin();
         const kit = body.brand_kit_id ? await getBrandKit(body.brand_kit_id) : null;
@@ -68,7 +84,13 @@ export async function POST(req: Request) {
       }
     );
 
-    return NextResponse.json({ job_id, price: pricing, ...output });
+    // Charged for the requested count; credit back anything not delivered.
+    await payment.reconcile(output.assets.filter((a) => a.url).length, job_id);
+    const receipt = await settleQuietly(payment);
+    return withPaymentReceipt(
+      NextResponse.json({ job_id, price: pricing, payment: receipt, ...output }),
+      receipt
+    );
   } catch (err) {
     return handleRouteError(err);
   }

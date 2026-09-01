@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { parseBody, requireBuyerWallet, handleRouteError, ApiError } from "@/lib/api-helpers";
+import { requirePayment, settleQuietly, withPaymentReceipt } from "@/lib/payments/x402";
 import { withJob } from "@/lib/jobs";
 import { listAllCollectionTokens, resolveCollectionMetadata, computeRarity } from "@/lib/clients/onchain";
 import { renderCollectionReportPdf } from "@/lib/pdf/report";
@@ -23,11 +24,26 @@ const bodySchema = z.object({
 export async function POST(req: Request) {
   try {
     const body = await parseBody<z.infer<typeof bodySchema>>(req, bodySchema);
-    const buyerWallet = requireBuyerWallet(req, body.buyer_wallet);
+    // Verify payment before spending anything downstream; settle only
+    // after the job succeeds. The claimed wallet is passed in so any
+    // credit balance it holds reduces what has to be paid on-chain --
+    // honoured only if that same wallet turns out to have signed.
+    const claimedWallet = req.headers.get("x-buyer-wallet") ?? body.buyer_wallet ?? null;
+    const payment = await requirePayment(req, {
+      serviceType: "s4_nft_scanner_report",
+      quantity: 1,
+      buyerWallet: claimedWallet
+    });
+    const buyerWallet = requireBuyerWallet(req, body.buyer_wallet, payment.payer);
     const pricing = getToolDefinition("s4_nft_scanner_report")!.pricing;
 
     const { job_id, output } = await withJob(
-      { serviceType: "s4_nft_scanner_report", buyerWallet, input: body },
+      {
+        serviceType: "s4_nft_scanner_report",
+        buyerWallet,
+        input: body,
+        payment
+      },
       async (jobId) => {
         const supabase = getSupabaseAdmin();
 
@@ -97,7 +113,11 @@ export async function POST(req: Request) {
       }
     );
 
-    return NextResponse.json({ job_id, price: pricing, ...output });
+    const receipt = await settleQuietly(payment);
+    return withPaymentReceipt(
+      NextResponse.json({ job_id, price: pricing, payment: receipt, ...output }),
+      receipt
+    );
   } catch (err) {
     return handleRouteError(err);
   }

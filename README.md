@@ -1,12 +1,23 @@
-# QuickMotive -- OKX.ai Creative & NFT Agent Suite
+# QuickMotive -- Creative & NFT Agent Suite
 
 An Agent Service Provider (ASP) exposing a portfolio of narrow, individually
-callable creative and NFT-analysis skills via A2MCP (pay-per-call), so each
-service earns independently instead of shipping as one monolithic agent.
+callable creative and NFT-analysis skills (pay-per-call), so each service
+earns independently instead of shipping as one monolithic agent.
 
-Positioning: the creative + NFT-intelligence desk on OKX.ai -- complements
-pure trading/data agents (CoinAnk, CertiK, etc.) by covering the media and
+Positioning: the creative + NFT-intelligence desk -- complements pure
+trading/data agents (CoinAnk, CertiK, etc.) by covering the media and
 visual-analysis gap.
+
+The same eleven services are sold through two marketplaces, over two
+transports, from one implementation:
+
+- **OKX.ai** via A2MCP, settled by OKX Agentic Wallet / OnchainOS.
+- **BNB Chain** (BNB Agent Studio, Yellow Crab) via MCP + an ERC-8004
+  on-chain identity, settled per call in USDT/USDC over x402/b402. See
+  [`docs/bnb-agent-deployment.md`](docs/bnb-agent-deployment.md).
+
+The BNB payment gate is off unless `X402_ENABLED=true`, so the OKX
+deployment behaves exactly as it did before that path existed.
 
 ## Architecture
 
@@ -107,6 +118,38 @@ Apply the migration to a Supabase project (`supabase db push` or paste
 `supabase/migrations/0001_init.sql` into the SQL editor) before exercising
 any route that touches the database.
 
+## BNB Chain deployment
+
+Full runbook: [`docs/bnb-agent-deployment.md`](docs/bnb-agent-deployment.md).
+Listing copy: [`listing/bnb-agent-studio.md`](listing/bnb-agent-studio.md),
+[`listing/yellowcrab.md`](listing/yellowcrab.md).
+
+```
+  /.well-known/agent-card.json   A2A AgentCard + ERC-8004 registration file,
+                                 built from lib/a2mcp/registry.ts
+  /api/mcp                       MCP JSON-RPC: initialize, tools/list,
+                                 tools/call -> proxies to the same service
+                                 routes a direct HTTP buyer hits
+  lib/payments/x402.ts           402 -> verify -> work -> settle, per call
+  scripts/register-agent.ts      ERC-8004 identity mint (dry-run default)
+  scripts/verify-agent.ts        pre-submission smoke test
+```
+
+```bash
+npm test                                   # money arithmetic (no network)
+npm run verify:pricing                     # nothing sold below provider cost
+npm run verify:tokens                      # token table vs. chain + facilitator
+npm run agent:verify -- https://<origin>   # what a reviewer/indexer will hit
+npm run agent:register                     # preflight + simulate, sends nothing
+npm run agent:register -- --confirm        # broadcast the registration
+```
+
+Pricing is derived from provider costs (`lib/pricing/costs.ts`), and
+under-delivery is credited back to the paying wallet rather than kept
+(`lib/payments/credits.ts`, migration `0002`) -- x402's `exact` scheme
+settles a fixed amount decided before the work runs, so the credit ledger
+is what makes "per delivered asset" true.
+
 ## OKX.ai integration checklist
 
 Confirmed via OKX's own published `okx/onchainos-skills` repo (their docs
@@ -171,6 +214,14 @@ These are places where the build brief assumed an interactive-agent MCP
 tool shape that doesn't match what a headless backend can call, or where a
 public API contract needs confirming before go-live:
 
+- **BNB / x402 path**: the payment wire format follows the x402 v1 spec
+  that b402 implements, but has not been exercised against a live
+  facilitator -- run one testnet payment before mainnet
+  (`npm run verify:tokens` checks the chain-side constants and the
+  facilitator's `/supported` in the meantime). The orchestrator is
+  unmetered and refuses to run while payments are on. Both, and the
+  mechanisms behind the two pricing fixes below, are written up in
+  [`docs/bnb-agent-deployment.md`](docs/bnb-agent-deployment.md).
 - **Higgsfield -- fully removed**: `lib/clients/higgsfield.ts` was
   originally guessed (Bearer auth, `POST /v1/generate_image`, synchronous
   response) and confirmed wrong against a live deployment (404, since the
@@ -286,10 +337,15 @@ public API contract needs confirming before go-live:
 
 ## Open risks (carried over from the build brief)
 
-- Higgsfield generation cost per call needs to be priced into each A2MCP
-  listing -- confirm credit cost per image/video/motion call before setting
-  buyer-facing prices in `lib/a2mcp/registry.ts` (current `amount` values
-  are placeholders).
+- Provider cost per call is no longer a placeholder for the paths where a
+  cost is known: `lib/pricing/costs.ts` holds provider unit costs as data
+  and derives buyer-facing prices from them, and `npm run verify:pricing`
+  fails if any service is priced below cost. This closed two real holes --
+  S2's flat $0.40/call against a Veo clip costing up to $1.20, and S1's
+  video path running the same Veo call behind a $0.05 flat price. The
+  remaining `amount` values (Gemini- and Stability-backed services) are
+  still placeholders: they have no `costBasis` entry, so the check passes
+  them silently. Add their costs to the table once confirmed.
 - Canva editing requires the design to already live in Canva or be
   importable -- not every buyer will have that (S3 handles this via
   `design_import_url` as a fallback, but import can still fail for
@@ -307,7 +363,11 @@ public API contract needs confirming before go-live:
 - S8 batch generation has variable output count (some requests land in the
   flagged pile). Pricing in the registry is `per_delivered_asset` for
   exactly this reason -- confirm this is how OKX's A2MCP settlement expects
-  variable-count billing to work before go-live.
+  variable-count billing to work before go-live. On the BNB path this is
+  handled: x402 authorizes the requested count up front, and
+  `payment.reconcile(delivered)` credits the difference back to the paying
+  wallet (`lib/payments/credits.ts`). The same applies to S10's rejected
+  collisions and to a Veo clip returned shorter than requested.
 - NFT-ready export assumes marketplace spec norms that can change. Kept in
   `config/marketplace-specs.ts` as data, not hardcoded in `lib/export-bundle.ts`,
   so a marketplace spec update is a config change, not a code change.

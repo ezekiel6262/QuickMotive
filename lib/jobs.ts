@@ -53,16 +53,50 @@ export async function failJob(jobId: string, err: unknown): Promise<void> {
 
 /** Wraps a service handler so every route gets consistent job bookkeeping. */
 export async function withJob<T extends Record<string, unknown>>(
-  params: { serviceType: ServiceType; buyerWallet: string; input: Record<string, unknown> },
+  params: {
+    serviceType: ServiceType;
+    buyerWallet: string;
+    input: Record<string, unknown>;
+    /**
+     * The call's payment context. Its price is recorded on the row up
+     * front, so the row anchors settlement even if the x402 settle step
+     * later fails -- an unsettled job is then a queryable state, not a
+     * silent zero. On failure, any credit the gate reserved for this call
+     * is released back to the buyer here, which is why the context is
+     * passed in rather than the bare numbers.
+     */
+    payment?: {
+      amount: number;
+      currency: string;
+      release: () => Promise<void>;
+    };
+  },
   handler: (jobId: string) => Promise<T>
 ): Promise<{ job_id: string; output: T }> {
-  const job = await createJob(params);
+  const job = await createJob({
+    serviceType: params.serviceType,
+    buyerWallet: params.buyerWallet,
+    input: params.input,
+    pricePaid: params.payment?.amount,
+    priceCurrency: params.payment?.currency
+  });
+
   try {
     const output = await handler(job.id);
     await completeJob(job.id, output);
     return { job_id: job.id, output };
   } catch (err) {
     await failJob(job.id, err);
+    // The buyer paid nothing on-chain (settlement only runs on success),
+    // but credit was already spent at the gate -- give it back. A failure
+    // here must not mask the original error.
+    if (params.payment) {
+      try {
+        await params.payment.release();
+      } catch (releaseErr) {
+        console.error(`[jobs] failed to release credit for job ${job.id}:`, releaseErr);
+      }
+    }
     throw err;
   }
 }

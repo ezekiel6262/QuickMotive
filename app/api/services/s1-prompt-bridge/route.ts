@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { parseBody, requireBuyerWallet, handleRouteError } from "@/lib/api-helpers";
+import { requirePayment, settleQuietly, withPaymentReceipt } from "@/lib/payments/x402";
+import { VEO_DEFAULT_DURATION_SECONDS } from "@/lib/pricing/costs";
 import { withJob } from "@/lib/jobs";
 import { extractStructuredPrompt } from "@/lib/clients/anthropic";
 import * as veo from "@/lib/clients/veo";
@@ -29,11 +31,34 @@ const bodySchema = z
 export async function POST(req: Request) {
   try {
     const body = await parseBody<z.infer<typeof bodySchema>>(req, bodySchema);
-    const buyerWallet = requireBuyerWallet(req, body.buyer_wallet);
+    // Verify payment before spending anything downstream; settle only
+    // after the job succeeds. The claimed wallet is passed in so any
+    // credit balance it holds reduces what has to be paid on-chain --
+    // honoured only if that same wallet turns out to have signed.
+    const claimedWallet = req.headers.get("x-buyer-wallet") ?? body.buyer_wallet ?? null;
+
+    // S1 has three paths with wildly different costs behind one price.
+    // Prompt extraction and image generation fit the flat $0.05; text ->
+    // video runs Veo, which costs ~24x that, so it is billed at S2's
+    // per-second rate instead. `lib/clients/veo.ts` defaults to 6s when no
+    // duration is given, which is what this path does.
+    const generatesVideo = !body.media_url && body.output_type === "video";
+    const payment = await requirePayment(req, {
+      serviceType: "s1_prompt_bridge",
+      priceAs: generatesVideo ? "s2_image_to_motion" : undefined,
+      quantity: generatesVideo ? VEO_DEFAULT_DURATION_SECONDS : 1,
+      buyerWallet: claimedWallet
+    });
+    const buyerWallet = requireBuyerWallet(req, body.buyer_wallet, payment.payer);
     const pricing = getToolDefinition("s1_prompt_bridge")!.pricing;
 
     const { job_id, output } = await withJob(
-      { serviceType: "s1_prompt_bridge", buyerWallet, input: body },
+      {
+        serviceType: "s1_prompt_bridge",
+        buyerWallet,
+        input: body,
+        payment
+      },
       async (jobId) => {
         const supabase = getSupabaseAdmin();
 
@@ -73,7 +98,11 @@ export async function POST(req: Request) {
       }
     );
 
-    return NextResponse.json({ job_id, price: pricing, ...output });
+    const receipt = await settleQuietly(payment);
+    return withPaymentReceipt(
+      NextResponse.json({ job_id, price: pricing, payment: receipt, ...output }),
+      receipt
+    );
   } catch (err) {
     return handleRouteError(err);
   }
